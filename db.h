@@ -2,6 +2,7 @@
 #define DB_H
 
 #include <stddef.h>
+#include <stdio.h>
 
 // Data-level information
 typedef unsigned long meta__t;
@@ -37,24 +38,26 @@ typedef struct _Log {
 } Log;
 
 // Database-level information
-#define IDX_PATH "/mydata/db.index"
-#define LOG_PATH "/mydata/db.log"
+#define DB_PATH "/mydata/db.storage"
 
 size_t total_node;
 size_t *layer_cap;
+FILE *db;
 
 int load(size_t layer_num);
 
-int run(size_t request_num);
+int run(size_t layer_num, size_t request_num);
 
-val__t get(key__t k);
+val__t get(key__t key);
 
-ptr__t next_node(key__t k, ptr__t p);
+ptr__t next_node(key__t key, ptr__t ptr, Node *node);
 
-Node read_node(ptr__t p);
+void read_node(ptr__t ptr, Node *node);
+
+val__t search_value(ptr__t ptr, key__t key);
 
 int prompt_help();
 
-void logistic(size_t layer_num);
+void initialize(size_t layer_num);
 
 #endif
