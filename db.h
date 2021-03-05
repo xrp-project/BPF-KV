@@ -1,16 +1,18 @@
 #ifndef DB_H
 #define DB_H
 
-// Data-level information
-typedef unsigned long m_type;
-typedef unsigned long k_type;
-typedef unsigned char v_type;
-typedef unsigned long p_type;
+#include <stddef.h>
 
-#define META_SIZE sizeof(m_type)
-#define KEY_SIZE sizeof(k_type)
-#define VAL_SIZE sizeof(v_type)
-#define PTR_SIZE sizeof(p_type)
+// Data-level information
+typedef unsigned long meta__t;
+typedef unsigned long key__t;
+typedef unsigned char val__t;
+typedef unsigned long ptr__t;
+
+#define META_SIZE sizeof(meta__t)
+#define KEY_SIZE sizeof(key__t)
+#define VAL_SIZE sizeof(val__t)
+#define PTR_SIZE sizeof(ptr__t)
 #define BLK_SIZE 512
 
 // Node-level information
@@ -19,33 +21,40 @@ typedef unsigned long p_type;
 
 #define NODE_CAPACITY (BLK_SIZE - 2 * META_SIZE) / (KEY_SIZE + PTR_SIZE)
 #define LOG_CAPACITY  (BLK_SIZE - 1 * META_SIZE) / (KEY_SIZE + VAL_SIZE)
+#define FANOUT NODE_CAPACITY
 
 typedef struct _Node {
-    m_type num;
-    m_type type;
-    k_type key[NODE_CAPACITY];
-    p_type ptr[NODE_CAPACITY];
+    meta__t num;
+    meta__t type;
+    key__t key[NODE_CAPACITY];
+    ptr__t ptr[NODE_CAPACITY];
 } Node;
 
 typedef struct _Log {
-    m_type num;
-    k_type key[LOG_CAPACITY];
-    v_type val[LOG_CAPACITY];
+    meta__t num;
+    key__t key[LOG_CAPACITY];
+    val__t val[LOG_CAPACITY];
 } Log;
 
 // Database-level information
-#define DB_PATH "/mydata/kv.store"
+#define IDX_PATH "/mydata/db.index"
+#define LOG_PATH "/mydata/db.log"
 
-int load(unsigned int num);
+size_t total_node;
+size_t *layer_cap;
 
-int run(unsigned int num);
+int load(size_t layer_num);
 
-v_type get(k_type k);
+int run(size_t request_num);
 
-p_type next_node(k_type k, p_type p);
+val__t get(key__t k);
 
-Node read_node(p_type p);
+ptr__t next_node(key__t k, ptr__t p);
+
+Node read_node(ptr__t p);
 
 int prompt_help();
+
+void logistic(size_t layer_num);
 
 #endif

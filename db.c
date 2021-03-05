@@ -3,30 +3,64 @@
 #include <stdlib.h>
 #include <string.h>
 
-int load(unsigned int num) {
-    printf("Load the database of %u layers\n", num);
+void logistic(size_t layer_num) {
+    layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
+    total_node = 1;
+    layer_cap[0] = 1;
+    for (size_t i = 1; i < layer_num; i++) {
+        layer_cap[i] = layer_cap[i - 1] * FANOUT;
+        total_node += layer_cap[i];
+    }
+    printf("%lu blocks in total\n", total_node);
+}
+
+int load(size_t layer_num) {
+    logistic(layer_num);
+
+    printf("Load the database of %lu layers\n", layer_num);
+    FILE *idx = fopen(IDX_PATH, "w+");    
+    Node node;
+    ptr__t next_pos = 1;
+    for (size_t i = 0; i < layer_num; i++) {
+        size_t extent = total_node / layer_cap[i], start_key = 0;
+        for (size_t j = 0; j < layer_cap[i]; j++) {
+            node.num = NODE_CAPACITY;
+            node.type = (j == layer_num - 1) ? LEAF : INTERNAL;
+            size_t sub_extent = extent / node.num;
+            for (size_t k = 0; k < node.num; k++) {
+                node.key[k] = start_key + k * sub_extent;
+                node.ptr[k] = next_pos * BLK_SIZE;
+                next_pos++;
+            }
+            fwrite(&node, sizeof(node), 1, idx);
+            start_key += extent;
+        }
+    }
+
+    free(layer_cap);
+    fclose(idx);
     return 0;
 }
 
-int run(unsigned int num) {
-    printf("Run the test of %u requests\n", num);
+int run(size_t request_num) {
+    printf("Run the test of %lu requests\n", request_num);
     return 0;
 }
 
-v_type get(k_type k) {
-    v_type v = 0;
+val__t get(key__t k) {
+    val__t v = 0;
 
     return v;
 }
 
-Node read_node(p_type p) {
+Node read_node(ptr__t p) {
     Node node;
 
     return node;
 }
 
-p_type next_node(k_type k, p_type p) {
-    p_type next = 0;
+ptr__t next_node(key__t k, ptr__t p) {
+    ptr__t next = 0;
 
     return next;    
 }
