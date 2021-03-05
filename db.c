@@ -46,7 +46,8 @@ int run(size_t layer_num, size_t request_num) {
     printf("Run the test of %lu requests\n", request_num);
     initialize(layer_num);
 
-    size_t max_key = layer_cap[layer_num] * NODE_CAPACITY;
+    size_t max_key = layer_cap[layer_num - 1] * NODE_CAPACITY;
+    printf("max_key: %lu\n", max_key);
     srand(2021);
     for (size_t i = 0; i < request_num; i++) {
         key__t key = rand() % max_key;
