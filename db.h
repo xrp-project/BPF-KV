@@ -39,9 +39,12 @@ typedef struct _Log {
 
 // Database-level information
 #define DB_PATH "/mydata/db.storage"
+#define LOAD_MODE 0
+#define RUN_MODE 1
 
 size_t total_node;
 size_t *layer_cap;
+key__t max_key;
 FILE *db;
 
 int load(size_t layer_num);
@@ -58,6 +61,12 @@ val__t search_value(ptr__t ptr, key__t key);
 
 int prompt_help();
 
-void initialize(size_t layer_num);
+void initialize(size_t layer_num, int mode);
+
+int terminate();
+
+int compare_nodes(Node *x, Node *y);
+
+void print_node(ptr__t ptr, Node *node);
 
 #endif
