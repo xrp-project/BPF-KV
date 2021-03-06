@@ -7,7 +7,7 @@
 // Data-level information
 typedef unsigned long meta__t;
 typedef unsigned long key__t;
-typedef unsigned char val__t;
+typedef unsigned char val__t[64];
 typedef unsigned long ptr__t;
 
 #define META_SIZE sizeof(meta__t)
@@ -15,13 +15,14 @@ typedef unsigned long ptr__t;
 #define VAL_SIZE sizeof(val__t)
 #define PTR_SIZE sizeof(ptr__t)
 #define BLK_SIZE 512
+#define BLK_SIZE_LOG 9
 
 // Node-level information
 #define INTERNAL 0
 #define LEAF 1
 
-#define NODE_CAPACITY (BLK_SIZE - 2 * META_SIZE) / (KEY_SIZE + PTR_SIZE)
-#define LOG_CAPACITY  (BLK_SIZE - 1 * META_SIZE) / (KEY_SIZE + VAL_SIZE)
+#define NODE_CAPACITY ((BLK_SIZE - 2 * META_SIZE) / (KEY_SIZE + PTR_SIZE))
+#define LOG_CAPACITY  ((BLK_SIZE) / (VAL_SIZE))
 #define FANOUT NODE_CAPACITY
 
 typedef struct _Node {
@@ -32,8 +33,6 @@ typedef struct _Node {
 } Node;
 
 typedef struct _Log {
-    meta__t num;
-    key__t key[LOG_CAPACITY];
     val__t val[LOG_CAPACITY];
 } Log;
 
@@ -51,13 +50,15 @@ int load(size_t layer_num);
 
 int run(size_t layer_num, size_t request_num);
 
-val__t get(key__t key);
+int get(key__t key, val__t val);
 
 ptr__t next_node(key__t key, ptr__t ptr, Node *node);
 
 void read_node(ptr__t ptr, Node *node);
 
-val__t search_value(ptr__t ptr, key__t key);
+void read_log(ptr__t ptr, Log *log);
+
+int retrieve_value(ptr__t ptr, val__t val);
 
 int prompt_help();
 

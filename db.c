@@ -27,6 +27,7 @@ void initialize(size_t layer_num, int mode) {
 }
 
 int terminate() {
+    printf("Done!\n");
     free(layer_cap);
     fclose(db);
     return 0;
@@ -50,19 +51,11 @@ int compare_nodes(Node *x, Node *y) {
     return 1;
 }
 
-void print_node(ptr__t ptr, Node *node) {
-    printf("----------------\n");
-    printf("ptr %lu num %lu type %lu\n", ptr, node->num, node->type);
-    for (size_t i = 0; i < node->num; i++) {
-        printf("(%6lu, %8lu) ", node->key[i], node->ptr[i]);
-    }
-    printf("\n----------------\n");
-}
-
 int load(size_t layer_num) {
     printf("Load the database of %lu layers\n", layer_num);
     initialize(layer_num, LOAD_MODE);
 
+    // 1. Load the index
     Node node, tmp;
     ptr__t next_pos = 1, tmp_ptr = 0;
     for (size_t i = 0; i < layer_num; i++) {
@@ -74,18 +67,31 @@ int load(size_t layer_num) {
             size_t sub_extent = extent / node.num;
             for (size_t k = 0; k < node.num; k++) {
                 node.key[k] = start_key + k * sub_extent;
-                node.ptr[k] = next_pos * BLK_SIZE;
+                node.ptr[k] = node.type == INTERNAL ? 
+                              next_pos   * BLK_SIZE :
+                              total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE;
                 next_pos++;
             }
             fwrite(&node, sizeof(Node), 1, db);
             start_key += extent;
 
             // Sanity check
-            read_node(tmp_ptr, &tmp);
-            print_node(tmp_ptr, &tmp);
-            compare_nodes(&node, &tmp);
-            tmp_ptr += BLK_SIZE;
+            // read_node(tmp_ptr, &tmp);
+            // compare_nodes(&node, &tmp);
+            // tmp_ptr += BLK_SIZE;
         }
+    }
+
+    // 2. Load the value log
+    Log log;
+    for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
+        for (size_t j = 0; j < LOG_CAPACITY; j++) {
+            sprintf(log.val[j], "%63lu", i + j);
+        }
+        fwrite(&log, sizeof(Log), 1, db);
+
+        // Sanity check
+        // read_log((total_node + i / LOG_CAPACITY) * BLK_SIZE, &log);
     }
 
     return terminate();
@@ -98,35 +104,71 @@ int run(size_t layer_num, size_t request_num) {
     srand(2021);
     for (size_t i = 0; i < request_num; i++) {
         key__t key = rand() % max_key;
-        printf("key: %lu\n", key);
-        val__t val = get(key);
+        val__t val;
+        get(key, val);
+        if (key != atoi(val)) {
+            printf("Error! key: %lu val: %s\n", key, val);
+        }
     }
 
     return terminate();
 }
 
-val__t get(key__t key) {
+int get(key__t key, val__t val) {
     ptr__t ptr = 0; // Start from the root
     Node node;
 
     do {
         ptr = next_node(key, ptr, &node);
-        // printf("key %lu ptr %lu node type %lu node start %lu\n", key, ptr, node.type, node.key[0]);
     } while (node.type != LEAF);
 
-    return search_value(ptr, key);
+    return retrieve_value(ptr, val);
+}
+
+void print_node(ptr__t ptr, Node *node) {
+    printf("----------------\n");
+    printf("ptr %lu num %lu type %lu\n", ptr, node->num, node->type);
+    for (size_t i = 0; i < NODE_CAPACITY; i++) {
+        printf("(%6lu, %8lu) ", node->key[i], node->ptr[i]);
+    }
+    printf("\n----------------\n");
+}
+
+void print_log(ptr__t ptr, Log *log) {
+    printf("----------------\n");
+    printf("ptr %lu\n", ptr);
+    for (size_t i = 0; i < LOG_CAPACITY; i++) {
+        printf("%s\n", log->val[i]);
+    }
+    printf("\n----------------\n");
 }
 
 void read_node(ptr__t ptr, Node *node) {
     fseek(db, ptr, SEEK_SET);
     fread(node, sizeof(Node), 1, db);
-    print_node(ptr, node);
+    
+    // Debug output
+    // print_node(ptr, node);
 }
 
-val__t search_value(ptr__t ptr, key__t key) {
-    val__t val = 0;
-    
-    return val;
+void read_log(ptr__t ptr, Log *log) {
+    fseek(db, ptr, SEEK_SET);
+    fread(log, sizeof(Log), 1, db);
+
+    // Debug output
+    // print_log(ptr, log);
+}
+
+int retrieve_value(ptr__t ptr, val__t val) {
+    Log log;
+    ptr__t mask = BLK_SIZE - 1;
+    ptr__t base = ptr & (~mask);
+    ptr__t offset = ptr & mask;
+
+    read_log(base, &log);
+    memcpy(val, log.val[offset / VAL_SIZE], VAL_SIZE);
+
+    return 0;
 }
 
 ptr__t next_node(key__t key, ptr__t ptr, Node *node) {
@@ -136,7 +178,7 @@ ptr__t next_node(key__t key, ptr__t ptr, Node *node) {
             return node->ptr[i - 1];
         }
     }
-    return 0;
+    return node->ptr[node->num - 1];
 }
 
 int prompt_help() {
