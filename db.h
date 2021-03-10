@@ -36,6 +36,11 @@ typedef struct _Log {
     val__t val[LOG_CAPACITY];
 } Log;
 
+typedef struct _CacheEntry {
+    ptr__t ptr;
+    Node node;
+} CacheEntry;
+
 // Database-level information
 #define DB_PATH "/mydata/db.storage"
 #define LOAD_MODE 0
@@ -45,10 +50,16 @@ size_t total_node;
 size_t *layer_cap;
 key__t max_key;
 FILE *db;
+CacheEntry *cache;
+size_t cache_cap;
 
 int load(size_t layer_num);
 
 int run(size_t layer_num, size_t request_num);
+
+void build_cache(size_t layer_num);
+
+int is_cached(ptr__t ptr, Node *node);
 
 int get(key__t key, val__t val);
 

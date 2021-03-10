@@ -22,13 +22,50 @@ void initialize(size_t layer_num, int mode) {
         total_node += layer_cap[i];
     }
     max_key = layer_cap[layer_num - 1] * NODE_CAPACITY;
+    cache_cap = 0;
 
     printf("%lu blocks in total, max key is %lu\n", total_node, max_key);
+}
+
+void build_cache(size_t layer_num) {
+    size_t entry_num = 0;
+    for (size_t i = 0; i < layer_num; i++) {
+        entry_num += layer_cap[i];
+    }
+    
+    cache = (CacheEntry *)malloc(entry_num * sizeof(CacheEntry));
+
+    size_t head = 0, tail = 1;
+    cache[head].ptr = 0; // start from the root
+    read_node(cache[head].ptr, &cache[head].node);
+
+    while (tail < entry_num) {
+        for (size_t i = 0; i < cache[head].node.num; i++) {
+            cache[tail].ptr = cache[head].node.ptr[i];
+            read_node(cache[tail].ptr, &cache[tail].node);
+            tail++;
+        } 
+        head++;
+    }
+
+    cache_cap = entry_num; // enable the cache
+    printf("Cache built. %lu layers %lu entries in total.\n", layer_num, entry_num);
+}
+
+int is_cached(ptr__t ptr, Node *node) {
+    for (size_t i = 0; i < cache_cap; i++) {
+        if (cache[i].ptr == ptr) {
+            *node = cache[i].node;
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int terminate() {
     printf("Done!\n");
     free(layer_cap);
+    free(cache);
     fclose(db);
     return 0;
 }
@@ -100,6 +137,7 @@ int load(size_t layer_num) {
 int run(size_t layer_num, size_t request_num) {
     printf("Run the test of %lu requests\n", request_num);
     initialize(layer_num, RUN_MODE);
+    build_cache(layer_num > 3 ? 3 : layer_num);
 
     srand(2021);
     for (size_t i = 0; i < request_num; i++) {
@@ -144,9 +182,10 @@ void print_log(ptr__t ptr, Log *log) {
 }
 
 void read_node(ptr__t ptr, Node *node) {
-    fseek(db, ptr, SEEK_SET);
-    fread(node, sizeof(Node), 1, db);
-    
+    if (!is_cached(ptr, node)) {
+        fseek(db, ptr, SEEK_SET);
+        fread(node, sizeof(Node), 1, db);
+    }
     // Debug output
     // print_node(ptr, node);
 }
