@@ -1,6 +1,7 @@
 #include "db.h"
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 
 void initialize(size_t layer_num, int mode) {
     if (mode == LOAD_MODE) {
@@ -140,15 +141,33 @@ int run(size_t layer_num, size_t request_num) {
     build_cache(layer_num > 3 ? 3 : layer_num);
 
     srand(2021);
+    struct timeval start, end;
+    long *histogram = (long *)malloc(sizeof(long) * request_num);
+
+    gettimeofday(&start, NULL);
     for (size_t i = 0; i < request_num; i++) {
+        struct timeval t0, t1;
+        gettimeofday(&t0, NULL);
+
         key__t key = rand() % max_key;
         val__t val;
         get(key, val);
         if (key != atoi(val)) {
             printf("Error! key: %lu val: %s\n", key, val);
         }
-    }
 
+        gettimeofday(&t1, NULL);
+        histogram[i] = 1000000 * (t1.tv_sec - t0.tv_sec) + (t1.tv_usec - t0.tv_usec);
+    }
+    gettimeofday(&end, NULL);
+
+    long sum = 0, run_time = 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
+    for (size_t i = 0; i < request_num; i++) sum += histogram[i];
+    printf("Average throughput: %f op/s latency: %f usec\n", 
+            (double)request_num / run_time * 1000000,
+            (double)sum / request_num);
+
+    free(histogram);
     return terminate();
 }
 
