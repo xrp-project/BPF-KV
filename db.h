@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <pthread.h>    
 
 // Data-level information
 typedef unsigned long meta__t;
@@ -45,6 +46,7 @@ typedef struct _CacheEntry {
 #define DB_PATH "/mydata/db.storage"
 #define LOAD_MODE 0
 #define RUN_MODE 1
+#define WORKER_NUM 10
 
 size_t total_node;
 size_t *layer_cap;
@@ -53,27 +55,43 @@ FILE *db;
 CacheEntry *cache;
 size_t cache_cap;
 
+typedef struct {
+    size_t op_count;
+    size_t index;
+    FILE *db_handler;
+} WorkerArg;
+
+FILE* get_handler(char *flag);
+
 int load(size_t layer_num);
 
 int run(size_t layer_num, size_t request_num);
+
+void *subtask(void *args);
 
 void build_cache(size_t layer_num);
 
 int is_cached(ptr__t ptr, Node *node);
 
-int get(key__t key, val__t val);
+int get(key__t key, val__t val, FILE *db_handler);
 
-ptr__t next_node(key__t key, ptr__t ptr, Node *node);
+ptr__t next_node(key__t key, ptr__t ptr, Node *node, FILE *db_handler);
 
-void read_node(ptr__t ptr, Node *node);
+void read_node(ptr__t ptr, Node *node, FILE *db_handler);
 
-void read_log(ptr__t ptr, Log *log);
+void read_log(ptr__t ptr, Log *log, FILE *db_handler);
 
-int retrieve_value(ptr__t ptr, val__t val);
+int retrieve_value(ptr__t ptr, val__t val, FILE *db_handler);
 
 int prompt_help();
 
 void initialize(size_t layer_num, int mode);
+
+void initialize_workers(WorkerArg *args, size_t op_count_per_worker);
+
+void start_workers(pthread_t *tids, WorkerArg *args);
+
+void terminate_workers(pthread_t *tids, WorkerArg *args);
 
 int terminate();
 

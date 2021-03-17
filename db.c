@@ -3,18 +3,22 @@
 #include <string.h>
 #include <sys/time.h>
 
-void initialize(size_t layer_num, int mode) {
-    if (mode == LOAD_MODE) {
-        db = fopen(DB_PATH, "w+");
-    } else {
-        db = fopen(DB_PATH, "r+");
-    }
-
-    if (db == NULL) {
+FILE* get_handler(char *flag) {
+    FILE *handler = fopen(DB_PATH, flag);
+    if (handler == NULL) {
         printf("Fail to open file %s!\n", DB_PATH);
         exit(0);
     }
+    return handler;
+}
 
+void initialize(size_t layer_num, int mode) {
+    if (mode == LOAD_MODE) {
+        db = get_handler("w+");
+    } else {
+        db = get_handler("r+");
+    }
+    
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
     total_node = 1;
     layer_cap[0] = 1;
@@ -38,12 +42,12 @@ void build_cache(size_t layer_num) {
 
     size_t head = 0, tail = 1;
     cache[head].ptr = 0; // start from the root
-    read_node(cache[head].ptr, &cache[head].node);
+    read_node(cache[head].ptr, &cache[head].node, db);
 
     while (tail < entry_num) {
         for (size_t i = 0; i < cache[head].node.num; i++) {
             cache[tail].ptr = cache[head].node.ptr[i];
-            read_node(cache[tail].ptr, &cache[tail].node);
+            read_node(cache[tail].ptr, &cache[tail].node, db);
             tail++;
         } 
         head++;
@@ -135,51 +139,73 @@ int load(size_t layer_num) {
     return terminate();
 }
 
+void initialize_workers(WorkerArg *args, size_t op_count_per_worker) {
+    for (size_t i = 0; i < WORKER_NUM; i++) {
+        args[i].index = i;
+        args[i].op_count = op_count_per_worker;
+        args[i].db_handler = get_handler("r+");
+    }
+}
+
+void start_workers(pthread_t *tids, WorkerArg *args) {
+    for (size_t i = 0; i < WORKER_NUM; i++) {
+        pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
+    }
+}
+
+void terminate_workers(pthread_t *tids, WorkerArg *args) {
+    for (size_t i = 0; i < WORKER_NUM; i++) {
+        pthread_join(tids[i], NULL);
+        fclose(args[i].db_handler);
+    }
+}
+
 int run(size_t layer_num, size_t request_num) {
     printf("Run the test of %lu requests\n", request_num);
     initialize(layer_num, RUN_MODE);
     build_cache(layer_num > 3 ? 3 : layer_num);
 
-    srand(2021);
     struct timeval start, end;
-    long *histogram = (long *)malloc(sizeof(long) * request_num);
+    pthread_t tids[WORKER_NUM];
+    WorkerArg args[WORKER_NUM];
+
+    initialize_workers(args, request_num / WORKER_NUM);
 
     gettimeofday(&start, NULL);
-    for (size_t i = 0; i < request_num; i++) {
-        struct timeval t0, t1;
-        gettimeofday(&t0, NULL);
-
-        key__t key = rand() % max_key;
-        val__t val;
-        get(key, val);
-        if (key != atoi(val)) {
-            printf("Error! key: %lu val: %s\n", key, val);
-        }
-
-        gettimeofday(&t1, NULL);
-        histogram[i] = 1000000 * (t1.tv_sec - t0.tv_sec) + (t1.tv_usec - t0.tv_usec);
-    }
+    start_workers(tids, args);
+    terminate_workers(tids, args);
     gettimeofday(&end, NULL);
 
-    long sum = 0, run_time = 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
-    for (size_t i = 0; i < request_num; i++) sum += histogram[i];
-    printf("Average throughput: %f op/s latency: %f usec\n", 
-            (double)request_num / run_time * 1000000,
-            (double)sum / request_num);
+    long run_time = 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
+    printf("Average throughput: %f op/s\n", 
+            (double)request_num / run_time * 1000000);
 
-    free(histogram);
     return terminate();
 }
 
-int get(key__t key, val__t val) {
+void *subtask(void *args) {
+    WorkerArg *r = (WorkerArg*)args;
+
+    srand(r->index);
+    for (size_t i = 0; i < r->op_count; i++) {
+        key__t key = rand() % max_key;
+        val__t val;
+        get(key, val, r->db_handler);
+        if (key != atoi(val)) {
+            printf("Error! key: %lu val: %s thrd: %ld\n", key, val, r->index);
+        }       
+    }
+}
+
+int get(key__t key, val__t val, FILE *db_handler) {
     ptr__t ptr = 0; // Start from the root
     Node node;
 
     do {
-        ptr = next_node(key, ptr, &node);
+        ptr = next_node(key, ptr, &node, db_handler);
     } while (node.type != LEAF);
 
-    return retrieve_value(ptr, val);
+    return retrieve_value(ptr, val, db_handler);
 }
 
 void print_node(ptr__t ptr, Node *node) {
@@ -200,37 +226,37 @@ void print_log(ptr__t ptr, Log *log) {
     printf("\n----------------\n");
 }
 
-void read_node(ptr__t ptr, Node *node) {
+void read_node(ptr__t ptr, Node *node, FILE *db_handler) {
     if (!is_cached(ptr, node)) {
-        fseek(db, ptr, SEEK_SET);
-        fread(node, sizeof(Node), 1, db);
+        fseek(db_handler, ptr, SEEK_SET);
+        fread(node, sizeof(Node), 1, db_handler);
     }
     // Debug output
     // print_node(ptr, node);
 }
 
-void read_log(ptr__t ptr, Log *log) {
-    fseek(db, ptr, SEEK_SET);
-    fread(log, sizeof(Log), 1, db);
+void read_log(ptr__t ptr, Log *log, FILE *db_handler) {
+    fseek(db_handler, ptr, SEEK_SET);
+    fread(log, sizeof(Log), 1, db_handler);
 
     // Debug output
     // print_log(ptr, log);
 }
 
-int retrieve_value(ptr__t ptr, val__t val) {
+int retrieve_value(ptr__t ptr, val__t val, FILE *db_handler) {
     Log log;
     ptr__t mask = BLK_SIZE - 1;
     ptr__t base = ptr & (~mask);
     ptr__t offset = ptr & mask;
 
-    read_log(base, &log);
+    read_log(base, &log, db_handler);
     memcpy(val, log.val[offset / VAL_SIZE], VAL_SIZE);
 
     return 0;
 }
 
-ptr__t next_node(key__t key, ptr__t ptr, Node *node) {
-    read_node(ptr, node);
+ptr__t next_node(key__t key, ptr__t ptr, Node *node, FILE *db_handler) {
+    read_node(ptr, node, db_handler);
     for (size_t i = 0; i < node->num; i++) {
         if (key < node->key[i]) {
             return node->ptr[i - 1];
