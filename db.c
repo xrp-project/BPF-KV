@@ -38,16 +38,15 @@ void build_cache(size_t layer_num) {
         entry_num += layer_cap[i];
     }
     
-    cache = (CacheEntry *)malloc(entry_num * sizeof(CacheEntry));
+    cache = (Node *)malloc(entry_num * sizeof(Node));
 
     size_t head = 0, tail = 1;
-    cache[head].ptr = 0; // start from the root
-    read_node(cache[head].ptr, &cache[head].node, db);
+    read_node(encode(0), &cache[head], db);
 
     while (tail < entry_num) {
-        for (size_t i = 0; i < cache[head].node.num; i++) {
-            cache[tail].ptr = cache[head].node.ptr[i];
-            read_node(cache[tail].ptr, &cache[tail].node, db);
+        for (size_t i = 0; i < cache[head].num; i++) {
+            read_node(cache[head].ptr[i], &cache[tail], db);
+            cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
             tail++;
         } 
         head++;
@@ -55,16 +54,6 @@ void build_cache(size_t layer_num) {
 
     cache_cap = entry_num; // enable the cache
     printf("Cache built. %lu layers %lu entries in total.\n", layer_num, entry_num);
-}
-
-int is_cached(ptr__t ptr, Node *node) {
-    for (size_t i = 0; i < cache_cap; i++) {
-        if (cache[i].ptr == ptr) {
-            *node = cache[i].node;
-            return 1;
-        }
-    }
-    return 0;
 }
 
 int terminate() {
@@ -110,10 +99,11 @@ int load(size_t layer_num) {
             for (size_t k = 0; k < node.num; k++) {
                 node.key[k] = start_key + k * sub_extent;
                 node.ptr[k] = node.type == INTERNAL ? 
-                              next_pos   * BLK_SIZE :
-                              total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE;
+                              encode(next_pos   * BLK_SIZE) :
+                              encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
                 next_pos++;
             }
+            print_node(0, &node);
             fwrite(&node, sizeof(Node), 1, db);
             start_key += extent;
 
@@ -198,11 +188,19 @@ void *subtask(void *args) {
 }
 
 int get(key__t key, val__t val, FILE *db_handler) {
-    ptr__t ptr = 0; // Start from the root
+    ptr__t ptr = (ptr__t)(&cache[0]); // Start from the root
     Node node;
 
+    printf("key %lu\n", key);
+
     do {
-        ptr = next_node(key, ptr, &node, db_handler);
+        print_node(ptr, (Node *)ptr);
+        ptr = next_node(key, (Node *)ptr);
+    } while (is_file_offset(ptr));
+
+    do {
+        read_node(ptr, &node, db_handler);
+        ptr = next_node(key, &node);
     } while (node.type != LEAF);
 
     return retrieve_value(ptr, val, db_handler);
@@ -227,16 +225,15 @@ void print_log(ptr__t ptr, Log *log) {
 }
 
 void read_node(ptr__t ptr, Node *node, FILE *db_handler) {
-    if (!is_cached(ptr, node)) {
-        fseek(db_handler, ptr, SEEK_SET);
-        fread(node, sizeof(Node), 1, db_handler);
-    }
+    fseek(db_handler, decode(ptr), SEEK_SET);
+    fread(node, sizeof(Node), 1, db_handler);
+    
     // Debug output
-    // print_node(ptr, node);
+    print_node(ptr, node);
 }
 
 void read_log(ptr__t ptr, Log *log, FILE *db_handler) {
-    fseek(db_handler, ptr, SEEK_SET);
+    fseek(db_handler, decode(ptr), SEEK_SET);
     fread(log, sizeof(Log), 1, db_handler);
 
     // Debug output
@@ -255,8 +252,7 @@ int retrieve_value(ptr__t ptr, val__t val, FILE *db_handler) {
     return 0;
 }
 
-ptr__t next_node(key__t key, ptr__t ptr, Node *node, FILE *db_handler) {
-    read_node(ptr, node, db_handler);
+ptr__t next_node(key__t key, Node *node) {
     for (size_t i = 0; i < node->num; i++) {
         if (key < node->key[i]) {
             return node->ptr[i - 1];

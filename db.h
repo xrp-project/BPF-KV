@@ -37,22 +37,18 @@ typedef struct _Log {
     val__t val[LOG_CAPACITY];
 } Log;
 
-typedef struct _CacheEntry {
-    ptr__t ptr;
-    Node node;
-} CacheEntry;
-
 // Database-level information
 #define DB_PATH "/mydata/db.storage"
 #define LOAD_MODE 0
 #define RUN_MODE 1
-#define WORKER_NUM 10
+#define WORKER_NUM 1
+#define FILE_MASK ((ptr__t)1 << 63)
 
 size_t total_node;
 size_t *layer_cap;
 key__t max_key;
 FILE *db;
-CacheEntry *cache;
+Node *cache;
 size_t cache_cap;
 
 typedef struct {
@@ -63,6 +59,18 @@ typedef struct {
 
 FILE* get_handler(char *flag);
 
+int is_file_offset(ptr__t ptr) {
+    return ptr & FILE_MASK;
+}
+
+ptr__t encode(ptr__t ptr) {
+    return ptr | FILE_MASK;
+}
+
+ptr__t decode(ptr__t ptr) {
+    return ptr & (~FILE_MASK);
+}
+
 int load(size_t layer_num);
 
 int run(size_t layer_num, size_t request_num);
@@ -71,11 +79,9 @@ void *subtask(void *args);
 
 void build_cache(size_t layer_num);
 
-int is_cached(ptr__t ptr, Node *node);
-
 int get(key__t key, val__t val, FILE *db_handler);
 
-ptr__t next_node(key__t key, ptr__t ptr, Node *node, FILE *db_handler);
+ptr__t next_node(key__t key, Node *node);
 
 void read_node(ptr__t ptr, Node *node, FILE *db_handler);
 
