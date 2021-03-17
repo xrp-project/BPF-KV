@@ -2,7 +2,7 @@
 
 * Build
 ```
-$ gcc -o db db.c db.h
+$ gcc -o db db.c db.h -lpthread
 ```
 
 * Run
