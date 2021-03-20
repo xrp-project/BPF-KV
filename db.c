@@ -48,7 +48,7 @@ void build_cache(size_t layer_num) {
             read_node(cache[head].ptr[i], &cache[tail], db);
             cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
             tail++;
-        } 
+        }
         head++;
     }
 
@@ -103,7 +103,6 @@ int load(size_t layer_num) {
                               encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
                 next_pos++;
             }
-            print_node(0, &node);
             fwrite(&node, sizeof(Node), 1, db);
             start_key += extent;
 
@@ -188,15 +187,14 @@ void *subtask(void *args) {
 }
 
 int get(key__t key, val__t val, FILE *db_handler) {
-    ptr__t ptr = (ptr__t)(&cache[0]); // Start from the root
+    ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
     Node node;
 
-    printf("key %lu\n", key);
-
-    do {
-        print_node(ptr, (Node *)ptr);
-        ptr = next_node(key, (Node *)ptr);
-    } while (is_file_offset(ptr));
+    if (cache_cap > 0) {
+        do {
+            ptr = next_node(key, (Node *)ptr);
+        } while (!is_file_offset(ptr));
+    }
 
     do {
         read_node(ptr, &node, db_handler);
@@ -229,7 +227,7 @@ void read_node(ptr__t ptr, Node *node, FILE *db_handler) {
     fread(node, sizeof(Node), 1, db_handler);
     
     // Debug output
-    print_node(ptr, node);
+    // print_node(ptr, node);
 }
 
 void read_log(ptr__t ptr, Log *log, FILE *db_handler) {

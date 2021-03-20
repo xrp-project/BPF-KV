@@ -59,7 +59,7 @@ typedef struct {
 
 FILE* get_handler(char *flag);
 
-int is_file_offset(ptr__t ptr) {
+ptr__t is_file_offset(ptr__t ptr) {
     return ptr & FILE_MASK;
 }
 
