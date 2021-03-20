@@ -39,7 +39,7 @@ typedef struct _Log {
 } Log;
 
 // Database-level information
-#define DB_PATH "/mydata/db.storage"
+#define DB_PATH "./db.storage"
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
