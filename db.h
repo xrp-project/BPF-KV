@@ -3,7 +3,8 @@
 
 #include <stddef.h>
 #include <stdio.h>
-#include <pthread.h>    
+#include <pthread.h>
+#include <sys/time.h>
 
 // Data-level information
 typedef unsigned long meta__t;
@@ -55,6 +56,7 @@ typedef struct {
     size_t op_count;
     size_t index;
     FILE *db_handler;
+    size_t timer;
 } WorkerArg;
 
 FILE* get_handler(char *flag);

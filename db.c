@@ -1,7 +1,6 @@
 #include "db.h"
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 
 FILE* get_handler(char *flag) {
     FILE *handler = fopen(DB_PATH, flag);
@@ -133,6 +132,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
         args[i].db_handler = get_handler("r+");
+        args[i].timer = 0;
     }
 }
 
@@ -166,22 +166,31 @@ int run(size_t layer_num, size_t request_num, size_t thread_num) {
     terminate_workers(tids, args);
     gettimeofday(&end, NULL);
 
+    long total_latency = 0;
+    for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
     long run_time = 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
-    printf("Average throughput: %f op/s\n", 
-            (double)request_num / run_time * 1000000);
+
+    printf("Average throughput: %f op/s latency: %f usec\n", 
+            (double)request_num / run_time * 1000000, (double)total_latency / request_num);
 
     return terminate();
 }
 
 void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
+    struct timeval start, end;
 
     srand(r->index);
     printf("thread %ld op_count %ld\n", r->index, r->op_count);
     for (size_t i = 0; i < r->op_count; i++) {
         key__t key = rand() % max_key;
         val__t val;
+
+        gettimeofday(&start, NULL);
         get(key, val, r->db_handler);
+        gettimeofday(&end, NULL);
+        r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
+
         if (key != atoi(val)) {
             printf("Error! key: %lu val: %s thrd: %ld\n", key, val, r->index);
         }       
