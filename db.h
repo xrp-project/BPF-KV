@@ -41,9 +41,9 @@ typedef struct _Log {
 #define DB_PATH "/mydata/db.storage"
 #define LOAD_MODE 0
 #define RUN_MODE 1
-#define WORKER_NUM 1
 #define FILE_MASK ((ptr__t)1 << 63)
 
+size_t worker_num;
 size_t total_node;
 size_t *layer_cap;
 key__t max_key;
@@ -73,7 +73,7 @@ ptr__t decode(ptr__t ptr) {
 
 int load(size_t layer_num);
 
-int run(size_t layer_num, size_t request_num);
+int run(size_t layer_num, size_t request_num, size_t thread_num);
 
 void *subtask(void *args);
 
@@ -93,7 +93,7 @@ int prompt_help();
 
 void initialize(size_t layer_num, int mode);
 
-void initialize_workers(WorkerArg *args, size_t op_count_per_worker);
+void initialize_workers(WorkerArg *args, size_t total_op_count);
 
 void start_workers(pthread_t *tids, WorkerArg *args);
 

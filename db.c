@@ -128,37 +128,38 @@ int load(size_t layer_num) {
     return terminate();
 }
 
-void initialize_workers(WorkerArg *args, size_t op_count_per_worker) {
-    for (size_t i = 0; i < WORKER_NUM; i++) {
+void initialize_workers(WorkerArg *args, size_t total_op_count) {
+    for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
-        args[i].op_count = op_count_per_worker;
+        args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
         args[i].db_handler = get_handler("r+");
     }
 }
 
 void start_workers(pthread_t *tids, WorkerArg *args) {
-    for (size_t i = 0; i < WORKER_NUM; i++) {
+    for (size_t i = 0; i < worker_num; i++) {
         pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
     }
 }
 
 void terminate_workers(pthread_t *tids, WorkerArg *args) {
-    for (size_t i = 0; i < WORKER_NUM; i++) {
+    for (size_t i = 0; i < worker_num; i++) {
         pthread_join(tids[i], NULL);
         fclose(args[i].db_handler);
     }
 }
 
-int run(size_t layer_num, size_t request_num) {
+int run(size_t layer_num, size_t request_num, size_t thread_num) {
     printf("Run the test of %lu requests\n", request_num);
     initialize(layer_num, RUN_MODE);
     build_cache(layer_num > 3 ? 3 : layer_num);
 
+    worker_num = thread_num;
     struct timeval start, end;
-    pthread_t tids[WORKER_NUM];
-    WorkerArg args[WORKER_NUM];
+    pthread_t tids[worker_num];
+    WorkerArg args[worker_num];
 
-    initialize_workers(args, request_num / WORKER_NUM);
+    initialize_workers(args, request_num);
 
     gettimeofday(&start, NULL);
     start_workers(tids, args);
@@ -176,6 +177,7 @@ void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
 
     srand(r->index);
+    printf("thread %ld op_count %ld\n", r->index, r->op_count);
     for (size_t i = 0; i < r->op_count; i++) {
         key__t key = rand() % max_key;
         val__t val;
@@ -271,10 +273,10 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[1], "--load") == 0) {
         return load(atoi(argv[2]));
     } else if (strcmp(argv[1], "--run") == 0) {
-        if (argc < 4) {
+        if (argc < 5) {
             return prompt_help();
         }
-        return run(atoi(argv[2]), atoi(argv[3]));
+        return run(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
     } else {
         return prompt_help();
     }
