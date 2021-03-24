@@ -1,21 +1,25 @@
 #include "db.h"
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/file.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
-FILE* get_handler(char *flag) {
-    FILE *handler = fopen(DB_PATH, flag);
-    if (handler == NULL) {
+int get_handler(int flag) {
+    int fd = open(DB_PATH, flag | O_DIRECT, 0755);
+    if (fd < 0) {
         printf("Fail to open file %s!\n", DB_PATH);
         exit(0);
     }
-    return handler;
+    return fd;
 }
 
 void initialize(size_t layer_num, int mode) {
     if (mode == LOAD_MODE) {
-        db = get_handler("w+");
+        db = get_handler(O_CREAT|O_TRUNC|O_WRONLY);
     } else {
-        db = get_handler("r+");
+        db = get_handler(O_RDONLY);
     }
     
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
@@ -37,7 +41,10 @@ void build_cache(size_t layer_num) {
         entry_num += layer_cap[i];
     }
     
-    cache = (Node *)malloc(entry_num * sizeof(Node));
+    if (posix_memalign((void **)&cache, 512, entry_num * sizeof(Node))) {
+        perror("posix_memalign failed");
+        exit(1);
+    }
 
     size_t head = 0, tail = 1;
     read_node(encode(0), &cache[head], db);
@@ -59,7 +66,7 @@ int terminate() {
     printf("Done!\n");
     free(layer_cap);
     free(cache);
-    fclose(db);
+    close(db);
     return 0;
 }
 
@@ -102,7 +109,7 @@ int load(size_t layer_num) {
                               encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
                 next_pos++;
             }
-            fwrite(&node, sizeof(Node), 1, db);
+            write(db, &node, sizeof(Node));
             start_key += extent;
 
             // Sanity check
@@ -118,7 +125,7 @@ int load(size_t layer_num) {
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
             sprintf(log.val[j], "%63lu", i + j);
         }
-        fwrite(&log, sizeof(Log), 1, db);
+        write(db, &log, sizeof(Log));
 
         // Sanity check
         // read_log((total_node + i / LOG_CAPACITY) * BLK_SIZE, &log);
@@ -131,7 +138,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
-        args[i].db_handler = get_handler("r+");
+        args[i].db_handler = get_handler(O_RDONLY);
         args[i].timer = 0;
     }
 }
@@ -145,7 +152,7 @@ void start_workers(pthread_t *tids, WorkerArg *args) {
 void terminate_workers(pthread_t *tids, WorkerArg *args) {
     for (size_t i = 0; i < worker_num; i++) {
         pthread_join(tids[i], NULL);
-        fclose(args[i].db_handler);
+        close(args[i].db_handler);
     }
 }
 
@@ -197,9 +204,14 @@ void *subtask(void *args) {
     }
 }
 
-int get(key__t key, val__t val, FILE *db_handler) {
+int get(key__t key, val__t val, int db_handler) {
     ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
-    Node node;
+    Node *node;
+
+    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
+        perror("posix_memalign failed");
+        exit(1);
+    }
 
     if (cache_cap > 0) {
         do {
@@ -208,9 +220,9 @@ int get(key__t key, val__t val, FILE *db_handler) {
     }
 
     do {
-        read_node(ptr, &node, db_handler);
-        ptr = next_node(key, &node);
-    } while (node.type != LEAF);
+        read_node(ptr, node, db_handler);
+        ptr = next_node(key, node);
+    } while (node->type != LEAF);
 
     return retrieve_value(ptr, val, db_handler);
 }
@@ -233,30 +245,35 @@ void print_log(ptr__t ptr, Log *log) {
     printf("\n----------------\n");
 }
 
-void read_node(ptr__t ptr, Node *node, FILE *db_handler) {
-    fseek(db_handler, decode(ptr), SEEK_SET);
-    fread(node, sizeof(Node), 1, db_handler);
+void read_node(ptr__t ptr, Node *node, int db_handler) {
+    lseek(db_handler, decode(ptr), SEEK_SET);
+    read(db_handler, node, sizeof(Node));
     
     // Debug output
     // print_node(ptr, node);
 }
 
-void read_log(ptr__t ptr, Log *log, FILE *db_handler) {
-    fseek(db_handler, decode(ptr), SEEK_SET);
-    fread(log, sizeof(Log), 1, db_handler);
+void read_log(ptr__t ptr, Log *log, int db_handler) {
+    lseek(db_handler, decode(ptr), SEEK_SET);
+    read(db_handler, log, sizeof(Log));
 
     // Debug output
     // print_log(ptr, log);
 }
 
-int retrieve_value(ptr__t ptr, val__t val, FILE *db_handler) {
-    Log log;
+int retrieve_value(ptr__t ptr, val__t val, int db_handler) {
+    Log *log;
+    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
+        perror("posix_memalign failed");
+        exit(1);
+    }
+
     ptr__t mask = BLK_SIZE - 1;
     ptr__t base = ptr & (~mask);
     ptr__t offset = ptr & mask;
 
-    read_log(base, &log, db_handler);
-    memcpy(val, log.val[offset / VAL_SIZE], VAL_SIZE);
+    read_log(base, log, db_handler);
+    memcpy(val, log->val[offset / VAL_SIZE], VAL_SIZE);
 
     return 0;
 }
@@ -272,7 +289,7 @@ ptr__t next_node(key__t key, Node *node) {
 
 int prompt_help() {
     printf("Usage: ./db --load number_of_layers\n");
-    printf("or     ./db --run number_of_layers number_of_requests\n");
+    printf("or     ./db --run number_of_layers number_of_requests number_of_threads\n");
     return 0;
 }
 

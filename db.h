@@ -48,18 +48,18 @@ size_t worker_num;
 size_t total_node;
 size_t *layer_cap;
 key__t max_key;
-FILE *db;
+int db;
 Node *cache;
 size_t cache_cap;
 
 typedef struct {
     size_t op_count;
     size_t index;
-    FILE *db_handler;
+    int db_handler;
     size_t timer;
 } WorkerArg;
 
-FILE* get_handler(char *flag);
+int get_handler(int flag);
 
 ptr__t is_file_offset(ptr__t ptr) {
     return ptr & FILE_MASK;
@@ -81,15 +81,15 @@ void *subtask(void *args);
 
 void build_cache(size_t layer_num);
 
-int get(key__t key, val__t val, FILE *db_handler);
+int get(key__t key, val__t val, int db_handler);
 
 ptr__t next_node(key__t key, Node *node);
 
-void read_node(ptr__t ptr, Node *node, FILE *db_handler);
+void read_node(ptr__t ptr, Node *node, int db_handler);
 
-void read_log(ptr__t ptr, Log *log, FILE *db_handler);
+void read_log(ptr__t ptr, Log *log, int db_handler);
 
-int retrieve_value(ptr__t ptr, val__t val, FILE *db_handler);
+int retrieve_value(ptr__t ptr, val__t val, int db_handler);
 
 int prompt_help();
 
