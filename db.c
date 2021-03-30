@@ -93,23 +93,27 @@ int load(size_t layer_num) {
     initialize(layer_num, LOAD_MODE);
 
     // 1. Load the index
-    Node node, tmp;
+    Node *node, *tmp;
+    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
+        perror("posix_memalign failed");
+        exit(1);
+    }
     ptr__t next_pos = 1, tmp_ptr = 0;
     for (size_t i = 0; i < layer_num; i++) {
         size_t extent = max_key / layer_cap[i], start_key = 0;
         printf("layer %lu extent %lu\n", i, extent);
         for (size_t j = 0; j < layer_cap[i]; j++) {
-            node.num = NODE_CAPACITY;
-            node.type = (i == layer_num - 1) ? LEAF : INTERNAL;
-            size_t sub_extent = extent / node.num;
-            for (size_t k = 0; k < node.num; k++) {
-                node.key[k] = start_key + k * sub_extent;
-                node.ptr[k] = node.type == INTERNAL ? 
+            node->num = NODE_CAPACITY;
+            node->type = (i == layer_num - 1) ? LEAF : INTERNAL;
+            size_t sub_extent = extent / node->num;
+            for (size_t k = 0; k < node->num; k++) {
+                node->key[k] = start_key + k * sub_extent;
+                node->ptr[k] = node->type == INTERNAL ? 
                               encode(next_pos   * BLK_SIZE) :
                               encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
                 next_pos++;
             }
-            write(db, &node, sizeof(Node));
+            write(db, node, sizeof(Node));
             start_key += extent;
 
             // Sanity check
@@ -120,17 +124,23 @@ int load(size_t layer_num) {
     }
 
     // 2. Load the value log
-    Log log;
+    Log *log;
+    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
+        perror("posix_memalign failed");
+        exit(1);
+    }
     for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
-            sprintf(log.val[j], "%63lu", i + j);
+            sprintf(log->val[j], "%63lu", i + j);
         }
-        write(db, &log, sizeof(Log));
+        write(db, log, sizeof(Log));
 
         // Sanity check
         // read_log((total_node + i / LOG_CAPACITY) * BLK_SIZE, &log);
     }
 
+    free(log);
+    free(node);
     return terminate();
 }
 

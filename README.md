@@ -2,7 +2,9 @@
 
 * Build
 ```
-$ gcc -o db db.c db.h -lpthread
+$ ./build.sh
+or
+$ gcc -o db db.c db.h -lpthread -D_GNU_SOURCE
 ```
 
 * Run
