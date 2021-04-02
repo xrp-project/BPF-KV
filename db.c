@@ -233,7 +233,7 @@ int get(key__t key, val__t val, int db_handler) {
     do {
 	printf("PTR: %lu\n", decode(ptr));
         read_node(ptr, node, db_handler);
-	print_node(ptr, node);
+	//print_node(ptr, node);
         ptr = next_node(key, node);
     } while (node->type != LEAF);
 
