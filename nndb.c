@@ -1,13 +1,25 @@
-#include "db.h"
+#include "nndb.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
 #include <sys/file.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <linux/treenvme_ioctl.h>
 
 int get_handler(int flag) {
     int fd = open(DB_PATH, flag | O_DIRECT, 0755);
+    if (fd < 0) {
+        printf("Fail to open file %s!\n", DB_PATH);
+        exit(0);
+    }
+    return fd;
+}
+
+int get_log_handler(int flag) {
+    int fd = open(LOG_PATH, flag | O_DIRECT, 0755);
     if (fd < 0) {
         printf("Fail to open file %s!\n", DB_PATH);
         exit(0);
@@ -22,6 +34,12 @@ void initialize(size_t layer_num, int mode) {
         db = get_handler(O_RDONLY);
     }
     
+    if (mode == LOAD_MODE) {
+        logfn = get_log_handler(O_CREAT|O_TRUNC|O_WRONLY);
+    } else {
+        logfn = get_log_handler(O_RDONLY);
+    }
+
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
     total_node = 1;
     layer_cap[0] = 1;
@@ -149,6 +167,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
         args[i].db_handler = get_handler(O_RDONLY);
+        args[i].log_handler = get_log_handler(O_RDONLY);
         args[i].timer = 0;
     }
 }
@@ -169,7 +188,7 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 int run(size_t layer_num, size_t request_num, size_t thread_num) {
     printf("Run the test of %lu requests\n", request_num);
     initialize(layer_num, RUN_MODE);
-    //build_cache(layer_num > 0 ? 0 : layer_num);
+    // build_cache(layer_num > 3 ? 0 : layer_num);
 
     worker_num = thread_num;
     struct timeval start, end;
@@ -204,7 +223,7 @@ void *subtask(void *args) {
         val__t val;
 
         gettimeofday(&start, NULL);
-        get(key, val, r->db_handler);
+        get(key, val, r->db_handler, r->log_handler);
         gettimeofday(&end, NULL);
         r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
 
@@ -214,9 +233,9 @@ void *subtask(void *args) {
     }
 }
 
-int get(key__t key, val__t val, int db_handler) {
+int get(key__t key, val__t val, int db_handler, int log_handler) {
     ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
-    Node *node;
+    Node *node = malloc(sizeof(Node));
 
     if (posix_memalign((void **)&node, 512, sizeof(Node))) {
         perror("posix_memalign failed");
@@ -229,22 +248,33 @@ int get(key__t key, val__t val, int db_handler) {
         } while (!is_file_offset(ptr));
     }
     */
-
+	
+    // Diff
+    /*
     do {
-	printf("PTR: %lu\n", decode(ptr));
         read_node(ptr, node, db_handler);
-	print_node(ptr, node);
         ptr = next_node(key, node);
     } while (node->type != LEAF);
+    */
 
-    printf("FINAL PTR:%d\n", ptr);
+    printf("Startingcall.\n");
+    //struct treenvme_block_table *tbl = malloc(sizeof(struct treenvme_block_table));
+    //tbl->length_of_array = 1;
+    //tbl->arr = malloc(sizeof(unsigned long) * tbl->length_of_array);
+    //tbl->arr[0] = key;
+    //ioctl(db_handler, TREENVME_IOCTL_REGISTER_BLOCKTABLE, tbl);
+    memcpy(node, &key, sizeof(key));
+    read_node(ptr, node, db_handler);
+    //print_node(ptr, node);
+    ptr = next_node(key, node); 
+    printf("FINALPTR: %d\n", ptr);
 
-    return retrieve_value(ptr, val, db_handler);
+    return retrieve_value(ptr, val, log_handler);
 }
 
 void print_node(ptr__t ptr, Node *node) {
     printf("----------------\n");
-    printf("ptr %lu num %lu type %lu\n", decode(ptr), node->num, node->type);
+    printf("ptr %lu num %lu type %lu\n", ptr, node->num, node->type);
     for (size_t i = 0; i < NODE_CAPACITY; i++) {
         printf("(%6lu, %8lu) ", node->key[i], node->ptr[i]);
     }

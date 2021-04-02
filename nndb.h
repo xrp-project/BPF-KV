@@ -39,7 +39,8 @@ typedef struct _Log {
 } Log;
 
 // Database-level information
-#define DB_PATH "/dev/nvme0n1"
+#define DB_PATH "/dev/treenvme0"
+#define LOG_PATH "/dev/nvme0n1"
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
@@ -49,6 +50,7 @@ size_t total_node;
 size_t *layer_cap;
 key__t max_key;
 int db;
+int logfn;
 Node *cache;
 size_t cache_cap;
 
@@ -57,9 +59,11 @@ typedef struct {
     size_t index;
     int db_handler;
     size_t timer;
+    int log_handler;
 } WorkerArg;
 
 int get_handler(int flag);
+int get_log_handler(int flag);
 
 ptr__t is_file_offset(ptr__t ptr) {
     return ptr & FILE_MASK;
@@ -81,7 +85,7 @@ void *subtask(void *args);
 
 void build_cache(size_t layer_num);
 
-int get(key__t key, val__t val, int db_handler);
+int get(key__t key, val__t val, int db_handler, int log_handler);
 
 ptr__t next_node(key__t key, Node *node);
 
