@@ -169,7 +169,7 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 int run(size_t layer_num, size_t request_num, size_t thread_num) {
     printf("Run the test of %lu requests\n", request_num);
     initialize(layer_num, RUN_MODE);
-    //build_cache(layer_num > 0 ? 0 : layer_num);
+    build_cache(layer_num > 2 ? 2 : layer_num);
 
     worker_num = thread_num;
     struct timeval start, end;
@@ -231,7 +231,7 @@ int get(key__t key, val__t val, int db_handler) {
     */
 
     do {
-	printf("PTR: %lu\n", decode(ptr));
+	//printf("PTR: %lu\n", decode(ptr));
         read_node(ptr, node, db_handler);
 	//print_node(ptr, node);
         ptr = next_node(key, node);

@@ -65,11 +65,11 @@ void build_cache(size_t layer_num) {
     }
 
     size_t head = 0, tail = 1;
-    read_node(encode(0), &cache[head], db);
+    read_node(encode(0), &cache[head], logfn);
 
     while (tail < entry_num) {
         for (size_t i = 0; i < cache[head].num; i++) {
-            read_node(cache[head].ptr[i], &cache[tail], db);
+            read_node(cache[head].ptr[i], &cache[tail], logfn);
             cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
             tail++;
         }
@@ -188,7 +188,7 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 int run(size_t layer_num, size_t request_num, size_t thread_num) {
     printf("Run the test of %lu requests\n", request_num);
     initialize(layer_num, RUN_MODE);
-    // build_cache(layer_num > 3 ? 0 : layer_num);
+    build_cache(layer_num > 3 ? 3 : layer_num);
 
     worker_num = thread_num;
     struct timeval start, end;
@@ -257,7 +257,7 @@ int get(key__t key, val__t val, int db_handler, int log_handler) {
     } while (node->type != LEAF);
     */
 
-    printf("Startingcall.\n");
+    //printf("Startingcall.\n");
     //struct treenvme_block_table *tbl = malloc(sizeof(struct treenvme_block_table));
     //tbl->length_of_array = 1;
     //tbl->arr = malloc(sizeof(unsigned long) * tbl->length_of_array);
