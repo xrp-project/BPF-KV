@@ -1,0 +1,7116 @@
+diff --git a/Makefile b/Makefile
+index b668725a2a62..947d4aad4f8b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2,7 +2,7 @@
+ VERSION = 5
+ PATCHLEVEL = 7
+ SUBLEVEL = 0
+-EXTRAVERSION =
++EXTRAVERSION = -ddp
+ NAME = Kleptomaniac Octopus
+ 
+ # *DOCUMENTATION*
+diff --git a/block/blk-exec.c b/block/blk-exec.c
+index e20a852ae432..0d9d6a2e74a5 100644
+--- a/block/blk-exec.c
++++ b/block/blk-exec.c
+@@ -27,7 +27,8 @@ static void blk_end_sync_rq(struct request *rq, blk_status_t error)
+ 	 * complete last, if this is a stack request the process (and thus
+ 	 * the rq pointer) could be invalid right after this complete()
+ 	 */
+-	complete(waiting);
++	if (waiting != NULL)
++		complete(waiting);
+ }
+ 
+ /**
+diff --git a/block/blk-mq.c b/block/blk-mq.c
+index a7785df2c944..ad494aab6cb3 100644
+--- a/block/blk-mq.c
++++ b/block/blk-mq.c
+@@ -2016,6 +2016,10 @@ static blk_qc_t blk_mq_make_request(struct request_queue *q, struct bio *bio)
+ 
+ 	blk_mq_bio_to_request(rq, bio, nr_segs);
+ 
++	// alter
++	// rq->alter_count = 0;
++	// rq->total_count = 1;
++
+ 	plug = blk_mq_plug(q, bio);
+ 	if (unlikely(is_flush_fua)) {
+ 		/* Bypass scheduler for flush requests */
+diff --git a/drivers/md/treecache/Kconfig b/drivers/md/treecache/Kconfig
+new file mode 100644
+index 000000000000..61fd6d1695a2
+--- /dev/null
++++ b/drivers/md/treecache/Kconfig
+@@ -0,0 +1,7 @@
++# SPDX-License-Identifier: GPL-2.0-only
++
++config TREECACHE
++	tristate "Block device as tree"
++	select CRC64
++	help
++	Allows a block device to used as a data-dependent tree.
+diff --git a/drivers/md/treecache/Makefile b/drivers/md/treecache/Makefile
+new file mode 100644
+index 000000000000..434c4ed1c410
+--- /dev/null
++++ b/drivers/md/treecache/Makefile
+@@ -0,0 +1,7 @@
++# SPDX-License-Identifier: GPL-2.0
++
++obj-$(CONFIG_BCACHE)	+= treecache.o
++
++bcache-y		:= alloc.o bset.o btree.o closure.o debug.o extents.o\
++	io.o journal.o movinggc.o request.o stats.o super.o sysfs.o trace.o\
++	util.o writeback.o
+diff --git a/drivers/md/treecache/dm-nvme-rq.c b/drivers/md/treecache/dm-nvme-rq.c
+new file mode 100644
+index 000000000000..3f8577e2c13b
+--- /dev/null
++++ b/drivers/md/treecache/dm-nvme-rq.c
+@@ -0,0 +1,602 @@
++/*
++ * Copyright (C) 2016 Red Hat, Inc. All rights reserved.
++ *
++ * This file is released under the GPL.
++ */
++
++#include "dm-core.h"
++#include "dm-rq.h"
++
++#include <linux/elevator.h> /* for rq_end_sector() */
++#include <linux/blk-mq.h>
++
++#define DM_MSG_PREFIX "core-rq"
++
++/*
++ * One of these is allocated per request.
++ */
++struct dm_rq_target_io {
++	struct mapped_device *md;
++	struct dm_target *ti;
++	struct request *orig, *clone;
++	struct kthread_work work;
++	blk_status_t error;
++	union map_info info;
++	struct dm_stats_aux stats_aux;
++	unsigned long duration_jiffies;
++	unsigned n_sectors;
++	unsigned completed;
++};
++
++#define DM_MQ_NR_HW_QUEUES 1
++#define DM_MQ_QUEUE_DEPTH 2048
++static unsigned dm_mq_nr_hw_queues = DM_MQ_NR_HW_QUEUES;
++static unsigned dm_mq_queue_depth = DM_MQ_QUEUE_DEPTH;
++
++/*
++ * Request-based DM's mempools' reserved IOs set by the user.
++ */
++#define RESERVED_REQUEST_BASED_IOS	256
++static unsigned reserved_rq_based_ios = RESERVED_REQUEST_BASED_IOS;
++
++unsigned dm_get_reserved_rq_based_ios(void)
++{
++	return __dm_get_module_param(&reserved_rq_based_ios,
++				     RESERVED_REQUEST_BASED_IOS, DM_RESERVED_MAX_IOS);
++}
++EXPORT_SYMBOL_GPL(dm_get_reserved_rq_based_ios);
++
++static unsigned dm_get_blk_mq_nr_hw_queues(void)
++{
++	return __dm_get_module_param(&dm_mq_nr_hw_queues, 1, 32);
++}
++
++static unsigned dm_get_blk_mq_queue_depth(void)
++{
++	return __dm_get_module_param(&dm_mq_queue_depth,
++				     DM_MQ_QUEUE_DEPTH, BLK_MQ_MAX_DEPTH);
++}
++
++int dm_request_based(struct mapped_device *md)
++{
++	return queue_is_mq(md->queue);
++}
++
++void dm_start_queue(struct request_queue *q)
++{
++	blk_mq_unquiesce_queue(q);
++	blk_mq_kick_requeue_list(q);
++}
++
++void dm_stop_queue(struct request_queue *q)
++{
++	if (blk_mq_queue_stopped(q))
++		return;
++
++	blk_mq_quiesce_queue(q);
++}
++
++/*
++ * Partial completion handling for request-based dm
++ */
++static void end_clone_bio(struct bio *clone)
++{
++	struct dm_rq_clone_bio_info *info =
++		container_of(clone, struct dm_rq_clone_bio_info, clone);
++	struct dm_rq_target_io *tio = info->tio;
++	unsigned int nr_bytes = info->orig->bi_iter.bi_size;
++	blk_status_t error = clone->bi_status;
++	bool is_last = !clone->bi_next;
++
++	bio_put(clone);
++
++	if (tio->error)
++		/*
++		 * An error has already been detected on the request.
++		 * Once error occurred, just let clone->end_io() handle
++		 * the remainder.
++		 */
++		return;
++	else if (error) {
++		/*
++		 * Don't notice the error to the upper layer yet.
++		 * The error handling decision is made by the target driver,
++		 * when the request is completed.
++		 */
++		tio->error = error;
++		goto exit;
++	}
++
++	/*
++	 * I/O for the bio successfully completed.
++	 * Notice the data completion to the upper layer.
++	 */
++	tio->completed += nr_bytes;
++
++	/*
++	 * Update the original request.
++	 * Do not use blk_mq_end_request() here, because it may complete
++	 * the original request before the clone, and break the ordering.
++	 */
++	if (is_last)
++ exit:
++		blk_update_request(tio->orig, BLK_STS_OK, tio->completed);
++}
++
++static struct dm_rq_target_io *tio_from_request(struct request *rq)
++{
++	return blk_mq_rq_to_pdu(rq);
++}
++
++static void rq_end_stats(struct mapped_device *md, struct request *orig)
++{
++	if (unlikely(dm_stats_used(&md->stats))) {
++		struct dm_rq_target_io *tio = tio_from_request(orig);
++		tio->duration_jiffies = jiffies - tio->duration_jiffies;
++		dm_stats_account_io(&md->stats, rq_data_dir(orig),
++				    blk_rq_pos(orig), tio->n_sectors, true,
++				    tio->duration_jiffies, &tio->stats_aux);
++	}
++}
++
++/*
++ * Don't touch any member of the md after calling this function because
++ * the md may be freed in dm_put() at the end of this function.
++ * Or do dm_get() before calling this function and dm_put() later.
++ */
++static void rq_completed(struct mapped_device *md)
++{
++	/* nudge anyone waiting on suspend queue */
++	if (unlikely(wq_has_sleeper(&md->wait)))
++		wake_up(&md->wait);
++
++	/*
++	 * dm_put() must be at the end of this function. See the comment above
++	 */
++	dm_put(md);
++}
++
++/*
++ * Complete the clone and the original request.
++ * Must be called without clone's queue lock held,
++ * see end_clone_request() for more details.
++ */
++static void dm_end_request(struct request *clone, blk_status_t error)
++{
++	struct dm_rq_target_io *tio = clone->end_io_data;
++	struct mapped_device *md = tio->md;
++	struct request *rq = tio->orig;
++
++	blk_rq_unprep_clone(clone);
++	tio->ti->type->release_clone_rq(clone, NULL);
++
++	rq_end_stats(md, rq);
++	blk_mq_end_request(rq, error);
++	rq_completed(md);
++}
++
++static void __dm_mq_kick_requeue_list(struct request_queue *q, unsigned long msecs)
++{
++	blk_mq_delay_kick_requeue_list(q, msecs);
++}
++
++void dm_mq_kick_requeue_list(struct mapped_device *md)
++{
++	__dm_mq_kick_requeue_list(dm_get_md_queue(md), 0);
++}
++EXPORT_SYMBOL(dm_mq_kick_requeue_list);
++
++static void dm_mq_delay_requeue_request(struct request *rq, unsigned long msecs)
++{
++	blk_mq_requeue_request(rq, false);
++	__dm_mq_kick_requeue_list(rq->q, msecs);
++}
++
++static void dm_requeue_original_request(struct dm_rq_target_io *tio, bool delay_requeue)
++{
++	struct mapped_device *md = tio->md;
++	struct request *rq = tio->orig;
++	unsigned long delay_ms = delay_requeue ? 100 : 0;
++
++	rq_end_stats(md, rq);
++	if (tio->clone) {
++		blk_rq_unprep_clone(tio->clone);
++		tio->ti->type->release_clone_rq(tio->clone, NULL);
++	}
++
++	dm_mq_delay_requeue_request(rq, delay_ms);
++	rq_completed(md);
++}
++
++static void dm_done(struct request *clone, blk_status_t error, bool mapped)
++{
++	int r = DM_ENDIO_DONE;
++	struct dm_rq_target_io *tio = clone->end_io_data;
++	dm_request_endio_fn rq_end_io = NULL;
++
++	if (tio->ti) {
++		rq_end_io = tio->ti->type->rq_end_io;
++
++		if (mapped && rq_end_io)
++			r = rq_end_io(tio->ti, clone, error, &tio->info);
++	}
++
++	if (unlikely(error == BLK_STS_TARGET)) {
++		if (req_op(clone) == REQ_OP_DISCARD &&
++		    !clone->q->limits.max_discard_sectors)
++			disable_discard(tio->md);
++		else if (req_op(clone) == REQ_OP_WRITE_SAME &&
++			 !clone->q->limits.max_write_same_sectors)
++			disable_write_same(tio->md);
++		else if (req_op(clone) == REQ_OP_WRITE_ZEROES &&
++			 !clone->q->limits.max_write_zeroes_sectors)
++			disable_write_zeroes(tio->md);
++	}
++
++	switch (r) {
++	case DM_ENDIO_DONE:
++		/* The target wants to complete the I/O */
++		dm_end_request(clone, error);
++		break;
++	case DM_ENDIO_INCOMPLETE:
++		/* The target will handle the I/O */
++		return;
++	case DM_ENDIO_REQUEUE:
++		/* The target wants to requeue the I/O */
++		dm_requeue_original_request(tio, false);
++		break;
++	case DM_ENDIO_DELAY_REQUEUE:
++		/* The target wants to requeue the I/O after a delay */
++		dm_requeue_original_request(tio, true);
++		break;
++	default:
++		DMWARN("unimplemented target endio return value: %d", r);
++		BUG();
++	}
++}
++
++/*
++ * Request completion handler for request-based dm
++ */
++static void dm_softirq_done(struct request *rq)
++{
++	bool mapped = true;
++	struct dm_rq_target_io *tio = tio_from_request(rq);
++	struct request *clone = tio->clone;
++
++	if (!clone) {
++		struct mapped_device *md = tio->md;
++
++		rq_end_stats(md, rq);
++		blk_mq_end_request(rq, tio->error);
++		rq_completed(md);
++		return;
++	}
++
++	if (rq->rq_flags & RQF_FAILED)
++		mapped = false;
++
++	dm_done(clone, tio->error, mapped);
++}
++
++/*
++ * Complete the clone and the original request with the error status
++ * through softirq context.
++ */
++static void dm_complete_request(struct request *rq, blk_status_t error)
++{
++	struct dm_rq_target_io *tio = tio_from_request(rq);
++
++	tio->error = error;
++	blk_mq_complete_request(rq);
++}
++
++/*
++ * Complete the not-mapped clone and the original request with the error status
++ * through softirq context.
++ * Target's rq_end_io() function isn't called.
++ * This may be used when the target's clone_and_map_rq() function fails.
++ */
++static void dm_kill_unmapped_request(struct request *rq, blk_status_t error)
++{
++	rq->rq_flags |= RQF_FAILED;
++	dm_complete_request(rq, error);
++}
++
++static void end_clone_request(struct request *clone, blk_status_t error)
++{
++	struct dm_rq_target_io *tio = clone->end_io_data;
++
++	dm_complete_request(tio->orig, error);
++}
++
++static blk_status_t dm_dispatch_clone_request(struct request *clone, struct request *rq)
++{
++	blk_status_t r;
++
++	if (blk_queue_io_stat(clone->q))
++		clone->rq_flags |= RQF_IO_STAT;
++
++	clone->start_time_ns = ktime_get_ns();
++	r = blk_insert_cloned_request(clone->q, clone);
++	if (r != BLK_STS_OK && r != BLK_STS_RESOURCE && r != BLK_STS_DEV_RESOURCE)
++		/* must complete clone in terms of original request */
++		dm_complete_request(rq, r);
++	return r;
++}
++
++static int dm_rq_bio_constructor(struct bio *bio, struct bio *bio_orig,
++				 void *data)
++{
++	struct dm_rq_target_io *tio = data;
++	struct dm_rq_clone_bio_info *info =
++		container_of(bio, struct dm_rq_clone_bio_info, clone);
++
++	info->orig = bio_orig;
++	info->tio = tio;
++	bio->bi_end_io = end_clone_bio;
++
++	return 0;
++}
++
++static int setup_clone(struct request *clone, struct request *rq,
++		       struct dm_rq_target_io *tio, gfp_t gfp_mask)
++{
++	int r;
++
++	r = blk_rq_prep_clone(clone, rq, &tio->md->bs, gfp_mask,
++			      dm_rq_bio_constructor, tio);
++	if (r)
++		return r;
++
++	clone->end_io = end_clone_request;
++	clone->end_io_data = tio;
++
++	tio->clone = clone;
++
++	return 0;
++}
++
++static void init_tio(struct dm_rq_target_io *tio, struct request *rq,
++		     struct mapped_device *md)
++{
++	tio->md = md;
++	tio->ti = NULL;
++	tio->clone = NULL;
++	tio->orig = rq;
++	tio->error = 0;
++	tio->completed = 0;
++	/*
++	 * Avoid initializing info for blk-mq; it passes
++	 * target-specific data through info.ptr
++	 * (see: dm_mq_init_request)
++	 */
++	if (!md->init_tio_pdu)
++		memset(&tio->info, 0, sizeof(tio->info));
++}
++
++/*
++ * Returns:
++ * DM_MAPIO_*       : the request has been processed as indicated
++ * DM_MAPIO_REQUEUE : the original request needs to be immediately requeued
++ * < 0              : the request was completed due to failure
++ */
++static int map_request(struct dm_rq_target_io *tio)
++{
++	int r;
++	struct dm_target *ti = tio->ti;
++	struct mapped_device *md = tio->md;
++	struct request *rq = tio->orig;
++	struct request *clone = NULL;
++	blk_status_t ret;
++
++	r = ti->type->clone_and_map_rq(ti, rq, &tio->info, &clone);
++	switch (r) {
++	case DM_MAPIO_SUBMITTED:
++		/* The target has taken the I/O to submit by itself later */
++		break;
++	case DM_MAPIO_REMAPPED:
++		if (setup_clone(clone, rq, tio, GFP_ATOMIC)) {
++			/* -ENOMEM */
++			ti->type->release_clone_rq(clone, &tio->info);
++			return DM_MAPIO_REQUEUE;
++		}
++
++		/* The target has remapped the I/O so dispatch it */
++		trace_block_rq_remap(clone->q, clone, disk_devt(dm_disk(md)),
++				     blk_rq_pos(rq));
++		ret = dm_dispatch_clone_request(clone, rq);
++		if (ret == BLK_STS_RESOURCE || ret == BLK_STS_DEV_RESOURCE) {
++			blk_rq_unprep_clone(clone);
++			blk_mq_cleanup_rq(clone);
++			tio->ti->type->release_clone_rq(clone, &tio->info);
++			tio->clone = NULL;
++			return DM_MAPIO_REQUEUE;
++		}
++		break;
++	case DM_MAPIO_REQUEUE:
++		/* The target wants to requeue the I/O */
++		break;
++	case DM_MAPIO_DELAY_REQUEUE:
++		/* The target wants to requeue the I/O after a delay */
++		dm_requeue_original_request(tio, true);
++		break;
++	case DM_MAPIO_KILL:
++		/* The target wants to complete the I/O */
++		dm_kill_unmapped_request(rq, BLK_STS_IOERR);
++		break;
++	default:
++		DMWARN("unimplemented target map return value: %d", r);
++		BUG();
++	}
++
++	return r;
++}
++
++/* DEPRECATED: previously used for request-based merge heuristic in dm_request_fn() */
++ssize_t dm_attr_rq_based_seq_io_merge_deadline_show(struct mapped_device *md, char *buf)
++{
++	return sprintf(buf, "%u\n", 0);
++}
++
++ssize_t dm_attr_rq_based_seq_io_merge_deadline_store(struct mapped_device *md,
++						     const char *buf, size_t count)
++{
++	return count;
++}
++
++static void dm_start_request(struct mapped_device *md, struct request *orig)
++{
++	blk_mq_start_request(orig);
++
++	if (unlikely(dm_stats_used(&md->stats))) {
++		struct dm_rq_target_io *tio = tio_from_request(orig);
++		tio->duration_jiffies = jiffies;
++		tio->n_sectors = blk_rq_sectors(orig);
++		dm_stats_account_io(&md->stats, rq_data_dir(orig),
++				    blk_rq_pos(orig), tio->n_sectors, false, 0,
++				    &tio->stats_aux);
++	}
++
++	/*
++	 * Hold the md reference here for the in-flight I/O.
++	 * We can't rely on the reference count by device opener,
++	 * because the device may be closed during the request completion
++	 * when all bios are completed.
++	 * See the comment in rq_completed() too.
++	 */
++	dm_get(md);
++}
++
++static int dm_mq_init_request(struct blk_mq_tag_set *set, struct request *rq,
++			      unsigned int hctx_idx, unsigned int numa_node)
++{
++	struct mapped_device *md = set->driver_data;
++	struct dm_rq_target_io *tio = blk_mq_rq_to_pdu(rq);
++
++	/*
++	 * Must initialize md member of tio, otherwise it won't
++	 * be available in dm_mq_queue_rq.
++	 */
++	tio->md = md;
++
++	if (md->init_tio_pdu) {
++		/* target-specific per-io data is immediately after the tio */
++		tio->info.ptr = tio + 1;
++	}
++
++	return 0;
++}
++
++static blk_status_t dm_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
++			  const struct blk_mq_queue_data *bd)
++{
++	struct request *rq = bd->rq;
++	struct dm_rq_target_io *tio = blk_mq_rq_to_pdu(rq);
++	struct mapped_device *md = tio->md;
++	struct dm_target *ti = md->immutable_target;
++
++	if (unlikely(!ti)) {
++		int srcu_idx;
++		struct dm_table *map = dm_get_live_table(md, &srcu_idx);
++
++		ti = dm_table_find_target(map, 0);
++		dm_put_live_table(md, srcu_idx);
++	}
++
++	if (ti->type->busy && ti->type->busy(ti))
++		return BLK_STS_RESOURCE;
++
++	dm_start_request(md, rq);
++
++	/* Init tio using md established in .init_request */
++	init_tio(tio, rq, md);
++
++	/*
++	 * Establish tio->ti before calling map_request().
++	 */
++	tio->ti = ti;
++
++	/* Direct call is fine since .queue_rq allows allocations */
++	if (map_request(tio) == DM_MAPIO_REQUEUE) {
++		/* Undo dm_start_request() before requeuing */
++		rq_end_stats(md, rq);
++		rq_completed(md);
++		return BLK_STS_RESOURCE;
++	}
++
++	return BLK_STS_OK;
++}
++
++static const struct blk_mq_ops dm_mq_ops = {
++	.queue_rq = dm_mq_queue_rq,
++	.complete = dm_softirq_done,
++	.init_request = dm_mq_init_request,
++};
++
++int dm_mq_init_request_queue(struct mapped_device *md, struct dm_table *t)
++{
++	struct request_queue *q;
++	struct dm_target *immutable_tgt;
++	int err;
++
++	md->tag_set = kzalloc_node(sizeof(struct blk_mq_tag_set), GFP_KERNEL, md->numa_node_id);
++	if (!md->tag_set)
++		return -ENOMEM;
++
++	md->tag_set->ops = &dm_mq_ops;
++	md->tag_set->queue_depth = dm_get_blk_mq_queue_depth();
++	md->tag_set->numa_node = md->numa_node_id;
++	md->tag_set->flags = BLK_MQ_F_SHOULD_MERGE;
++	md->tag_set->nr_hw_queues = dm_get_blk_mq_nr_hw_queues();
++	md->tag_set->driver_data = md;
++
++	md->tag_set->cmd_size = sizeof(struct dm_rq_target_io);
++	immutable_tgt = dm_table_get_immutable_target(t);
++	if (immutable_tgt && immutable_tgt->per_io_data_size) {
++		/* any target-specific per-io data is immediately after the tio */
++		md->tag_set->cmd_size += immutable_tgt->per_io_data_size;
++		md->init_tio_pdu = true;
++	}
++
++	err = blk_mq_alloc_tag_set(md->tag_set);
++	if (err)
++		goto out_kfree_tag_set;
++
++	q = blk_mq_init_allocated_queue(md->tag_set, md->queue, true);
++	if (IS_ERR(q)) {
++		err = PTR_ERR(q);
++		goto out_tag_set;
++	}
++
++	return 0;
++
++out_tag_set:
++	blk_mq_free_tag_set(md->tag_set);
++out_kfree_tag_set:
++	kfree(md->tag_set);
++
++	return err;
++}
++
++void dm_mq_cleanup_mapped_device(struct mapped_device *md)
++{
++	if (md->tag_set) {
++		blk_mq_free_tag_set(md->tag_set);
++		kfree(md->tag_set);
++	}
++}
++
++module_param(reserved_rq_based_ios, uint, S_IRUGO | S_IWUSR);
++MODULE_PARM_DESC(reserved_rq_based_ios, "Reserved IOs in request-based mempools");
++
++/* Unused, but preserved for userspace compatibility */
++static bool use_blk_mq = true;
++module_param(use_blk_mq, bool, S_IRUGO | S_IWUSR);
++MODULE_PARM_DESC(use_blk_mq, "Use block multiqueue for request-based DM devices");
++
++module_param(dm_mq_nr_hw_queues, uint, S_IRUGO | S_IWUSR);
++MODULE_PARM_DESC(dm_mq_nr_hw_queues, "Number of hardware queues for request-based dm-mq devices");
++
++module_param(dm_mq_queue_depth, uint, S_IRUGO | S_IWUSR);
++MODULE_PARM_DESC(dm_mq_queue_depth, "Queue depth for request-based dm-mq devices");
+diff --git a/drivers/md/treecache/dm-nvme-rq.h b/drivers/md/treecache/dm-nvme-rq.h
+new file mode 100644
+index 000000000000..1eea0da641db
+--- /dev/null
++++ b/drivers/md/treecache/dm-nvme-rq.h
+@@ -0,0 +1,47 @@
++/*
++ * Internal header file for device mapper
++ *
++ * Copyright (C) 2016 Red Hat, Inc. All rights reserved.
++ *
++ * This file is released under the LGPL.
++ */
++
++#ifndef DM_RQ_INTERNAL_H
++#define DM_RQ_INTERNAL_H
++
++#include <linux/bio.h>
++#include <linux/kthread.h>
++
++#include "dm-stats.h"
++
++struct mapped_device;
++
++/*
++ * For request-based dm - the bio clones we allocate are embedded in these
++ * structs.
++ *
++ * We allocate these with bio_alloc_bioset, using the front_pad parameter when
++ * the bioset is created - this means the bio has to come at the end of the
++ * struct.
++ */
++struct dm_rq_clone_bio_info {
++	struct bio *orig;
++	struct dm_rq_target_io *tio;
++	struct bio clone;
++};
++
++int dm_mq_init_request_queue(struct mapped_device *md, struct dm_table *t);
++void dm_mq_cleanup_mapped_device(struct mapped_device *md);
++
++void dm_start_queue(struct request_queue *q);
++void dm_stop_queue(struct request_queue *q);
++
++void dm_mq_kick_requeue_list(struct mapped_device *md);
++
++unsigned dm_get_reserved_rq_based_ios(void);
++
++ssize_t dm_attr_rq_based_seq_io_merge_deadline_show(struct mapped_device *md, char *buf);
++ssize_t dm_attr_rq_based_seq_io_merge_deadline_store(struct mapped_device *md,
++						     const char *buf, size_t count);
++
++#endif
+diff --git a/drivers/md/treecache/dm-treepath.c b/drivers/md/treecache/dm-treepath.c
+new file mode 100644
+index 000000000000..2e67d6a18cf5
+--- /dev/null
++++ b/drivers/md/treecache/dm-treepath.c
+@@ -0,0 +1,2131 @@
++/*
++ * Copyright (C) 2003 Sistina Software Limited.
++ * Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
++ *
++ * This file is released under the GPL.
++ */
++
++#include <linux/device-mapper.h>
++
++#include "dm-rq.h"
++#include "dm-bio-record.h"
++#include "dm-path-selector.h"
++#include "dm-uevent.h"
++
++#include <linux/blkdev.h>
++#include <linux/ctype.h>
++#include <linux/init.h>
++#include <linux/mempool.h>
++#include <linux/module.h>
++#include <linux/pagemap.h>
++#include <linux/slab.h>
++#include <linux/time.h>
++#include <linux/timer.h>
++#include <linux/workqueue.h>
++#include <linux/delay.h>
++#include <scsi/scsi_dh.h>
++#include <linux/atomic.h>
++#include <linux/blk-mq.h>
++
++#define DM_MSG_PREFIX "treepath"
++#define DM_PG_INIT_DELAY_MSECS 2000
++#define DM_PG_INIT_DELAY_DEFAULT ((unsigned) -1)
++#define QUEUE_IF_NO_PATH_TIMEOUT_DEFAULT 0
++
++static unsigned long queue_if_no_path_timeout_secs = QUEUE_IF_NO_PATH_TIMEOUT_DEFAULT;
++
++/*
++ * Paths are grouped into Priority Groups and numbered from 1 upwards.
++ * Each has a path selector which controls which path gets used.
++ */
++struct priority_group {
++	struct list_head list;
++
++	struct multipath *m;		/* Owning multipath instance */
++	struct path_selector ps;
++
++	unsigned pg_num;		/* Reference number */
++	unsigned nr_pgpaths;		/* Number of paths in PG */
++	struct list_head pgpaths;
++
++	bool bypassed:1;		/* Temporarily bypass this PG? */
++};
++
++/* Treepath context */
++struct treepath {
++	unsigned long flags;
++
++	spinlock_t lock;
++	struct dm_target *ti;
++}
++
++/* Multipath context */
++struct multipath {
++	unsigned long flags;		/* Multipath state flags */
++
++	spinlock_t lock;
++	enum dm_queue_mode queue_mode;
++
++	struct pgpath *current_pgpath;
++	struct priority_group *current_pg;
++	struct priority_group *next_pg;	/* Switch to this PG if set */
++
++	atomic_t nr_valid_paths;	/* Total number of usable paths */
++	unsigned nr_priority_groups;
++	struct list_head priority_groups;
++
++	const char *hw_handler_name;
++	char *hw_handler_params;
++	wait_queue_head_t pg_init_wait;	/* Wait for pg_init completion */
++	unsigned pg_init_retries;	/* Number of times to retry pg_init */
++	unsigned pg_init_delay_msecs;	/* Number of msecs before pg_init retry */
++	atomic_t pg_init_in_progress;	/* Only one pg_init allowed at once */
++	atomic_t pg_init_count;		/* Number of times pg_init called */
++
++	struct mutex work_mutex;
++	struct work_struct trigger_event;
++	struct dm_target *ti;
++
++	struct work_struct process_queued_bios;
++	struct bio_list queued_bios;
++
++	struct timer_list nopath_timer;	/* Timeout for queue_if_no_path */
++};
++
++/*
++ * Context information attached to each io we process.
++ */
++struct dm_mpath_io {
++	struct pgpath *pgpath;
++	size_t nr_bytes;
++};
++
++typedef int (*action_fn) (struct pgpath *pgpath);
++
++static struct workqueue_struct *kmultipathd, *kmpath_handlerd;
++static void trigger_event(struct work_struct *work);
++static void activate_or_offline_path(struct pgpath *pgpath);
++static void activate_path_work(struct work_struct *work);
++static void process_queued_bios(struct work_struct *work);
++static void queue_if_no_path_timeout_work(struct timer_list *t);
++
++/*-----------------------------------------------
++ * Multipath state flags.
++ *-----------------------------------------------*/
++
++#define MPATHF_QUEUE_IO 0			/* Must we queue all I/O? */
++#define MPATHF_QUEUE_IF_NO_PATH 1		/* Queue I/O if last path fails? */
++#define MPATHF_SAVED_QUEUE_IF_NO_PATH 2		/* Saved state during suspension */
++#define MPATHF_RETAIN_ATTACHED_HW_HANDLER 3	/* If there's already a hw_handler present, don't change it. */
++#define MPATHF_PG_INIT_DISABLED 4		/* pg_init is not currently allowed */
++#define MPATHF_PG_INIT_REQUIRED 5		/* pg_init needs calling? */
++#define MPATHF_PG_INIT_DELAY_RETRY 6		/* Delay pg_init retry? */
++
++/*-----------------------------------------------
++ * Allocation routines
++ *-----------------------------------------------*/
++
++static struct pgpath *alloc_pgpath(void)
++{
++	struct pgpath *pgpath = kzalloc(sizeof(*pgpath), GFP_KERNEL);
++
++	if (!pgpath)
++		return NULL;
++
++	pgpath->is_active = true;
++
++	return pgpath;
++}
++
++static void free_pgpath(struct pgpath *pgpath)
++{
++	kfree(pgpath);
++}
++
++static struct priority_group *alloc_priority_group(void)
++{
++	struct priority_group *pg;
++
++	pg = kzalloc(sizeof(*pg), GFP_KERNEL);
++
++	if (pg)
++		INIT_LIST_HEAD(&pg->pgpaths);
++
++	return pg;
++}
++
++static void free_pgpaths(struct list_head *pgpaths, struct dm_target *ti)
++{
++	struct pgpath *pgpath, *tmp;
++
++	list_for_each_entry_safe(pgpath, tmp, pgpaths, list) {
++		list_del(&pgpath->list);
++		dm_put_device(ti, pgpath->path.dev);
++		free_pgpath(pgpath);
++	}
++}
++
++static void free_priority_group(struct priority_group *pg,
++				struct dm_target *ti)
++{
++	struct path_selector *ps = &pg->ps;
++
++	if (ps->type) {
++		ps->type->destroy(ps);
++		dm_put_path_selector(ps->type);
++	}
++
++	free_pgpaths(&pg->pgpaths, ti);
++	kfree(pg);
++}
++
++static struct multipath *alloc_multipath(struct dm_target *ti)
++{
++	struct multipath *m;
++
++	m = kzalloc(sizeof(*m), GFP_KERNEL);
++	if (m) {
++		INIT_LIST_HEAD(&m->priority_groups);
++		spin_lock_init(&m->lock);
++		atomic_set(&m->nr_valid_paths, 0);
++		INIT_WORK(&m->trigger_event, trigger_event);
++		mutex_init(&m->work_mutex);
++
++		m->queue_mode = DM_TYPE_NONE;
++
++		m->ti = ti;
++		ti->private = m;
++
++		timer_setup(&m->nopath_timer, queue_if_no_path_timeout_work, 0);
++	}
++
++	return m;
++}
++
++static int alloc_multipath_stage2(struct dm_target *ti, struct multipath *m)
++{
++	if (m->queue_mode == DM_TYPE_NONE) {
++		m->queue_mode = DM_TYPE_REQUEST_BASED;
++	} else if (m->queue_mode == DM_TYPE_BIO_BASED) {
++		INIT_WORK(&m->process_queued_bios, process_queued_bios);
++		/*
++		 * bio-based doesn't support any direct scsi_dh management;
++		 * it just discovers if a scsi_dh is attached.
++		 */
++		set_bit(MPATHF_RETAIN_ATTACHED_HW_HANDLER, &m->flags);
++	}
++
++	dm_table_set_type(ti->table, m->queue_mode);
++
++	/*
++	 * Init fields that are only used when a scsi_dh is attached
++	 * - must do this unconditionally (really doesn't hurt non-SCSI uses)
++	 */
++	set_bit(MPATHF_QUEUE_IO, &m->flags);
++	atomic_set(&m->pg_init_in_progress, 0);
++	atomic_set(&m->pg_init_count, 0);
++	m->pg_init_delay_msecs = DM_PG_INIT_DELAY_DEFAULT;
++	init_waitqueue_head(&m->pg_init_wait);
++
++	return 0;
++}
++
++static void free_multipath(struct multipath *m)
++{
++	struct priority_group *pg, *tmp;
++
++	list_for_each_entry_safe(pg, tmp, &m->priority_groups, list) {
++		list_del(&pg->list);
++		free_priority_group(pg, m->ti);
++	}
++
++	kfree(m->hw_handler_name);
++	kfree(m->hw_handler_params);
++	mutex_destroy(&m->work_mutex);
++	kfree(m);
++}
++
++static struct dm_mpath_io *get_mpio(union map_info *info)
++{
++	return info->ptr;
++}
++
++static size_t multipath_per_bio_data_size(void)
++{
++	return sizeof(struct dm_mpath_io) + sizeof(struct dm_bio_details);
++}
++
++static struct dm_mpath_io *get_mpio_from_bio(struct bio *bio)
++{
++	return dm_per_bio_data(bio, multipath_per_bio_data_size());
++}
++
++static struct dm_bio_details *get_bio_details_from_mpio(struct dm_mpath_io *mpio)
++{
++	/* dm_bio_details is immediately after the dm_mpath_io in bio's per-bio-data */
++	void *bio_details = mpio + 1;
++	return bio_details;
++}
++
++static void multipath_init_per_bio_data(struct bio *bio, struct dm_mpath_io **mpio_p)
++{
++	struct dm_mpath_io *mpio = get_mpio_from_bio(bio);
++	struct dm_bio_details *bio_details = get_bio_details_from_mpio(mpio);
++
++	mpio->nr_bytes = bio->bi_iter.bi_size;
++	mpio->pgpath = NULL;
++	*mpio_p = mpio;
++
++	dm_bio_record(bio_details, bio);
++}
++
++/*-----------------------------------------------
++ * Path selection
++ *-----------------------------------------------*/
++
++static int __pg_init_all_paths(struct multipath *m)
++{
++	struct pgpath *pgpath;
++	unsigned long pg_init_delay = 0;
++
++	lockdep_assert_held(&m->lock);
++
++	if (atomic_read(&m->pg_init_in_progress) || test_bit(MPATHF_PG_INIT_DISABLED, &m->flags))
++		return 0;
++
++	atomic_inc(&m->pg_init_count);
++	clear_bit(MPATHF_PG_INIT_REQUIRED, &m->flags);
++
++	/* Check here to reset pg_init_required */
++	if (!m->current_pg)
++		return 0;
++
++	if (test_bit(MPATHF_PG_INIT_DELAY_RETRY, &m->flags))
++		pg_init_delay = msecs_to_jiffies(m->pg_init_delay_msecs != DM_PG_INIT_DELAY_DEFAULT ?
++						 m->pg_init_delay_msecs : DM_PG_INIT_DELAY_MSECS);
++	list_for_each_entry(pgpath, &m->current_pg->pgpaths, list) {
++		/* Skip failed paths */
++		if (!pgpath->is_active)
++			continue;
++		if (queue_delayed_work(kmpath_handlerd, &pgpath->activate_path,
++				       pg_init_delay))
++			atomic_inc(&m->pg_init_in_progress);
++	}
++	return atomic_read(&m->pg_init_in_progress);
++}
++
++static int pg_init_all_paths(struct multipath *m)
++{
++	int ret;
++	unsigned long flags;
++
++	spin_lock_irqsave(&m->lock, flags);
++	ret = __pg_init_all_paths(m);
++	spin_unlock_irqrestore(&m->lock, flags);
++
++	return ret;
++}
++
++static void __switch_pg(struct multipath *m, struct priority_group *pg)
++{
++	m->current_pg = pg;
++
++	/* Must we initialise the PG first, and queue I/O till it's ready? */
++	if (m->hw_handler_name) {
++		set_bit(MPATHF_PG_INIT_REQUIRED, &m->flags);
++		set_bit(MPATHF_QUEUE_IO, &m->flags);
++	} else {
++		clear_bit(MPATHF_PG_INIT_REQUIRED, &m->flags);
++		clear_bit(MPATHF_QUEUE_IO, &m->flags);
++	}
++
++	atomic_set(&m->pg_init_count, 0);
++}
++
++static struct pgpath *choose_path_in_pg(struct multipath *m,
++					struct priority_group *pg,
++					size_t nr_bytes)
++{
++	unsigned long flags;
++	struct dm_path *path;
++	struct pgpath *pgpath;
++
++	path = pg->ps.type->select_path(&pg->ps, nr_bytes);
++	if (!path)
++		return ERR_PTR(-ENXIO);
++
++	pgpath = path_to_pgpath(path);
++
++	if (unlikely(READ_ONCE(m->current_pg) != pg)) {
++		/* Only update current_pgpath if pg changed */
++		spin_lock_irqsave(&m->lock, flags);
++		m->current_pgpath = pgpath;
++		__switch_pg(m, pg);
++		spin_unlock_irqrestore(&m->lock, flags);
++	}
++
++	return pgpath;
++}
++
++static struct pgpath *choose_pgpath(struct multipath *m, size_t nr_bytes)
++{
++	unsigned long flags;
++	struct priority_group *pg;
++	struct pgpath *pgpath;
++	unsigned bypassed = 1;
++
++	if (!atomic_read(&m->nr_valid_paths)) {
++		clear_bit(MPATHF_QUEUE_IO, &m->flags);
++		goto failed;
++	}
++
++	/* Were we instructed to switch PG? */
++	if (READ_ONCE(m->next_pg)) {
++		spin_lock_irqsave(&m->lock, flags);
++		pg = m->next_pg;
++		if (!pg) {
++			spin_unlock_irqrestore(&m->lock, flags);
++			goto check_current_pg;
++		}
++		m->next_pg = NULL;
++		spin_unlock_irqrestore(&m->lock, flags);
++		pgpath = choose_path_in_pg(m, pg, nr_bytes);
++		if (!IS_ERR_OR_NULL(pgpath))
++			return pgpath;
++	}
++
++	/* Don't change PG until it has no remaining paths */
++check_current_pg:
++	pg = READ_ONCE(m->current_pg);
++	if (pg) {
++		pgpath = choose_path_in_pg(m, pg, nr_bytes);
++		if (!IS_ERR_OR_NULL(pgpath))
++			return pgpath;
++	}
++
++	/*
++	 * Loop through priority groups until we find a valid path.
++	 * First time we skip PGs marked 'bypassed'.
++	 * Second time we only try the ones we skipped, but set
++	 * pg_init_delay_retry so we do not hammer controllers.
++	 */
++	do {
++		list_for_each_entry(pg, &m->priority_groups, list) {
++			if (pg->bypassed == !!bypassed)
++				continue;
++			pgpath = choose_path_in_pg(m, pg, nr_bytes);
++			if (!IS_ERR_OR_NULL(pgpath)) {
++				if (!bypassed)
++					set_bit(MPATHF_PG_INIT_DELAY_RETRY, &m->flags);
++				return pgpath;
++			}
++		}
++	} while (bypassed--);
++
++failed:
++	spin_lock_irqsave(&m->lock, flags);
++	m->current_pgpath = NULL;
++	m->current_pg = NULL;
++	spin_unlock_irqrestore(&m->lock, flags);
++
++	return NULL;
++}
++
++/*
++ * dm_report_EIO() is a macro instead of a function to make pr_debug()
++ * report the function name and line number of the function from which
++ * it has been invoked.
++ */
++#define dm_report_EIO(m)						\
++do {									\
++	struct mapped_device *md = dm_table_get_md((m)->ti->table);	\
++									\
++	pr_debug("%s: returning EIO; QIFNP = %d; SQIFNP = %d; DNFS = %d\n", \
++		 dm_device_name(md),					\
++		 test_bit(MPATHF_QUEUE_IF_NO_PATH, &(m)->flags),	\
++		 test_bit(MPATHF_SAVED_QUEUE_IF_NO_PATH, &(m)->flags),	\
++		 dm_noflush_suspending((m)->ti));			\
++} while (0)
++
++/*
++ * Check whether bios must be queued in the device-mapper core rather
++ * than here in the target.
++ *
++ * If MPATHF_QUEUE_IF_NO_PATH and MPATHF_SAVED_QUEUE_IF_NO_PATH hold
++ * the same value then we are not between multipath_presuspend()
++ * and multipath_resume() calls and we have no need to check
++ * for the DMF_NOFLUSH_SUSPENDING flag.
++ */
++static bool __must_push_back(struct multipath *m, unsigned long flags)
++{
++	return ((test_bit(MPATHF_QUEUE_IF_NO_PATH, &flags) !=
++		 test_bit(MPATHF_SAVED_QUEUE_IF_NO_PATH, &flags)) &&
++		dm_noflush_suspending(m->ti));
++}
++
++/*
++ * Following functions use READ_ONCE to get atomic access to
++ * all m->flags to avoid taking spinlock
++ */
++static bool must_push_back_rq(struct multipath *m)
++{
++	unsigned long flags = READ_ONCE(m->flags);
++	return test_bit(MPATHF_QUEUE_IF_NO_PATH, &flags) || __must_push_back(m, flags);
++}
++
++static bool must_push_back_bio(struct multipath *m)
++{
++	unsigned long flags = READ_ONCE(m->flags);
++	return __must_push_back(m, flags);
++}
++
++/*
++ * Map cloned requests (request-based multipath)
++ */
++static int multipath_clone_and_map(struct dm_target *ti, struct request *rq,
++				   union map_info *map_context,
++				   struct request **__clone)
++{
++	struct multipath *m = ti->private;
++	size_t nr_bytes = blk_rq_bytes(rq);
++	struct pgpath *pgpath;
++	struct block_device *bdev;
++	struct dm_mpath_io *mpio = get_mpio(map_context);
++	struct request_queue *q;
++	struct request *clone;
++
++	/* Do we need to select a new pgpath? */
++	pgpath = READ_ONCE(m->current_pgpath);
++	if (!pgpath || !test_bit(MPATHF_QUEUE_IO, &m->flags))
++		pgpath = choose_pgpath(m, nr_bytes);
++
++	if (!pgpath) {
++		if (must_push_back_rq(m))
++			return DM_MAPIO_DELAY_REQUEUE;
++		dm_report_EIO(m);	/* Failed */
++		return DM_MAPIO_KILL;
++	} else if (test_bit(MPATHF_QUEUE_IO, &m->flags) ||
++		   test_bit(MPATHF_PG_INIT_REQUIRED, &m->flags)) {
++		pg_init_all_paths(m);
++		return DM_MAPIO_DELAY_REQUEUE;
++	}
++
++	mpio->pgpath = pgpath;
++	mpio->nr_bytes = nr_bytes;
++
++	bdev = pgpath->path.dev->bdev;
++	q = bdev_get_queue(bdev);
++	clone = blk_get_request(q, rq->cmd_flags | REQ_NOMERGE,
++			BLK_MQ_REQ_NOWAIT);
++	if (IS_ERR(clone)) {
++		/* EBUSY, ENODEV or EWOULDBLOCK: requeue */
++		if (blk_queue_dying(q)) {
++			atomic_inc(&m->pg_init_in_progress);
++			activate_or_offline_path(pgpath);
++			return DM_MAPIO_DELAY_REQUEUE;
++		}
++
++		/*
++		 * blk-mq's SCHED_RESTART can cover this requeue, so we
++		 * needn't deal with it by DELAY_REQUEUE. More importantly,
++		 * we have to return DM_MAPIO_REQUEUE so that blk-mq can
++		 * get the queue busy feedback (via BLK_STS_RESOURCE),
++		 * otherwise I/O merging can suffer.
++		 */
++		return DM_MAPIO_REQUEUE;
++	}
++	clone->bio = clone->biotail = NULL;
++	clone->rq_disk = bdev->bd_disk;
++	clone->cmd_flags |= REQ_FAILFAST_TRANSPORT;
++	*__clone = clone;
++
++	if (pgpath->pg->ps.type->start_io)
++		pgpath->pg->ps.type->start_io(&pgpath->pg->ps,
++					      &pgpath->path,
++					      nr_bytes);
++	return DM_MAPIO_REMAPPED;
++}
++
++static void multipath_release_clone(struct request *clone,
++				    union map_info *map_context)
++{
++	if (unlikely(map_context)) {
++		/*
++		 * non-NULL map_context means caller is still map
++		 * method; must undo multipath_clone_and_map()
++		 */
++		struct dm_mpath_io *mpio = get_mpio(map_context);
++		struct pgpath *pgpath = mpio->pgpath;
++
++		if (pgpath && pgpath->pg->ps.type->end_io)
++			pgpath->pg->ps.type->end_io(&pgpath->pg->ps,
++						    &pgpath->path,
++						    mpio->nr_bytes);
++	}
++
++	blk_put_request(clone);
++}
++
++/*
++ * Map cloned bios (bio-based multipath)
++ */
++
++static struct pgpath *__map_bio(struct multipath *m, struct bio *bio)
++{
++	struct pgpath *pgpath;
++	unsigned long flags;
++	bool queue_io;
++
++	/* Do we need to select a new pgpath? */
++	pgpath = READ_ONCE(m->current_pgpath);
++	if (!pgpath || !test_bit(MPATHF_QUEUE_IO, &m->flags))
++		pgpath = choose_pgpath(m, bio->bi_iter.bi_size);
++
++	/* MPATHF_QUEUE_IO might have been cleared by choose_pgpath. */
++	queue_io = test_bit(MPATHF_QUEUE_IO, &m->flags);
++
++	if ((pgpath && queue_io) ||
++	    (!pgpath && test_bit(MPATHF_QUEUE_IF_NO_PATH, &m->flags))) {
++		/* Queue for the daemon to resubmit */
++		spin_lock_irqsave(&m->lock, flags);
++		bio_list_add(&m->queued_bios, bio);
++		spin_unlock_irqrestore(&m->lock, flags);
++
++		/* PG_INIT_REQUIRED cannot be set without QUEUE_IO */
++		if (queue_io || test_bit(MPATHF_PG_INIT_REQUIRED, &m->flags))
++			pg_init_all_paths(m);
++		else if (!queue_io)
++			queue_work(kmultipathd, &m->process_queued_bios);
++
++		return ERR_PTR(-EAGAIN);
++	}
++
++	return pgpath;
++}
++
++static int __multipath_map_bio(struct multipath *m, struct bio *bio,
++			       struct dm_mpath_io *mpio)
++{
++	struct pgpath *pgpath = __map_bio(m, bio);
++
++	if (IS_ERR(pgpath))
++		return DM_MAPIO_SUBMITTED;
++
++	if (!pgpath) {
++		if (must_push_back_bio(m))
++			return DM_MAPIO_REQUEUE;
++		dm_report_EIO(m);
++		return DM_MAPIO_KILL;
++	}
++
++	mpio->pgpath = pgpath;
++
++	bio->bi_status = 0;
++	bio_set_dev(bio, pgpath->path.dev->bdev);
++	bio->bi_opf |= REQ_FAILFAST_TRANSPORT;
++
++	if (pgpath->pg->ps.type->start_io)
++		pgpath->pg->ps.type->start_io(&pgpath->pg->ps,
++					      &pgpath->path,
++					      mpio->nr_bytes);
++	return DM_MAPIO_REMAPPED;
++}
++
++static int multipath_map_bio(struct dm_target *ti, struct bio *bio)
++{
++	struct multipath *m = ti->private;
++	struct dm_mpath_io *mpio = NULL;
++
++	multipath_init_per_bio_data(bio, &mpio);
++	return __multipath_map_bio(m, bio, mpio);
++}
++
++static void process_queued_io_list(struct multipath *m)
++{
++	if (m->queue_mode == DM_TYPE_REQUEST_BASED)
++		dm_mq_kick_requeue_list(dm_table_get_md(m->ti->table));
++	else if (m->queue_mode == DM_TYPE_BIO_BASED)
++		queue_work(kmultipathd, &m->process_queued_bios);
++}
++
++static void process_queued_bios(struct work_struct *work)
++{
++	int r;
++	unsigned long flags;
++	struct bio *bio;
++	struct bio_list bios;
++	struct blk_plug plug;
++	struct multipath *m =
++		container_of(work, struct multipath, process_queued_bios);
++
++	bio_list_init(&bios);
++
++	spin_lock_irqsave(&m->lock, flags);
++
++	if (bio_list_empty(&m->queued_bios)) {
++		spin_unlock_irqrestore(&m->lock, flags);
++		return;
++	}
++
++	bio_list_merge(&bios, &m->queued_bios);
++	bio_list_init(&m->queued_bios);
++
++	spin_unlock_irqrestore(&m->lock, flags);
++
++	blk_start_plug(&plug);
++	while ((bio = bio_list_pop(&bios))) {
++		struct dm_mpath_io *mpio = get_mpio_from_bio(bio);
++		dm_bio_restore(get_bio_details_from_mpio(mpio), bio);
++		r = __multipath_map_bio(m, bio, mpio);
++		switch (r) {
++		case DM_MAPIO_KILL:
++			bio->bi_status = BLK_STS_IOERR;
++			bio_endio(bio);
++			break;
++		case DM_MAPIO_REQUEUE:
++			bio->bi_status = BLK_STS_DM_REQUEUE;
++			bio_endio(bio);
++			break;
++		case DM_MAPIO_REMAPPED:
++			generic_make_request(bio);
++			break;
++		case DM_MAPIO_SUBMITTED:
++			break;
++		default:
++			WARN_ONCE(true, "__multipath_map_bio() returned %d\n", r);
++		}
++	}
++	blk_finish_plug(&plug);
++}
++
++/*
++ * If we run out of usable paths, should we queue I/O or error it?
++ */
++static int queue_if_no_path(struct multipath *m, bool queue_if_no_path,
++			    bool save_old_value)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&m->lock, flags);
++	assign_bit(MPATHF_SAVED_QUEUE_IF_NO_PATH, &m->flags,
++		   (save_old_value && test_bit(MPATHF_QUEUE_IF_NO_PATH, &m->flags)) ||
++		   (!save_old_value && queue_if_no_path));
++	assign_bit(MPATHF_QUEUE_IF_NO_PATH, &m->flags, queue_if_no_path);
++	spin_unlock_irqrestore(&m->lock, flags);
++
++	if (!queue_if_no_path) {
++		dm_table_run_md_queue_async(m->ti->table);
++		process_queued_io_list(m);
++	}
++
++	return 0;
++}
++
++/*
++ * If the queue_if_no_path timeout fires, turn off queue_if_no_path and
++ * process any queued I/O.
++ */
++static void queue_if_no_path_timeout_work(struct timer_list *t)
++{
++	struct multipath *m = from_timer(m, t, nopath_timer);
++	struct mapped_device *md = dm_table_get_md(m->ti->table);
++
++	DMWARN("queue_if_no_path timeout on %s, failing queued IO", dm_device_name(md));
++	queue_if_no_path(m, false, false);
++}
++
++/*
++ * Enable the queue_if_no_path timeout if necessary.
++ * Called with m->lock held.
++ */
++static void enable_nopath_timeout(struct multipath *m)
++{
++	unsigned long queue_if_no_path_timeout =
++		READ_ONCE(queue_if_no_path_timeout_secs) * HZ;
++
++	lockdep_assert_held(&m->lock);
++
++	if (queue_if_no_path_timeout > 0 &&
++	    atomic_read(&m->nr_valid_paths) == 0 &&
++	    test_bit(MPATHF_QUEUE_IF_NO_PATH, &m->flags)) {
++		mod_timer(&m->nopath_timer,
++			  jiffies + queue_if_no_path_timeout);
++	}
++}
++
++static void disable_nopath_timeout(struct multipath *m)
++{
++	del_timer_sync(&m->nopath_timer);
++}
++
++/*
++ * An event is triggered whenever a path is taken out of use.
++ * Includes path failure and PG bypass.
++ */
++static void trigger_event(struct work_struct *work)
++{
++	struct multipath *m =
++		container_of(work, struct multipath, trigger_event);
++
++	dm_table_event(m->ti->table);
++}
++
++/*-----------------------------------------------------------------
++ * Constructor/argument parsing:
++ * <#multipath feature args> [<arg>]*
++ * <#hw_handler args> [hw_handler [<arg>]*]
++ * <#priority groups>
++ * <initial priority group>
++ *     [<selector> <#selector args> [<arg>]*
++ *      <#paths> <#per-path selector args>
++ *         [<path> [<arg>]* ]+ ]+
++ *---------------------------------------------------------------*/
++static int parse_path_selector(struct dm_arg_set *as, struct priority_group *pg,
++			       struct dm_target *ti)
++{
++	int r;
++	struct path_selector_type *pst;
++	unsigned ps_argc;
++
++	static const struct dm_arg _args[] = {
++		{0, 1024, "invalid number of path selector args"},
++	};
++
++	pst = dm_get_path_selector(dm_shift_arg(as));
++	if (!pst) {
++		ti->error = "unknown path selector type";
++		return -EINVAL;
++	}
++
++	r = dm_read_arg_group(_args, as, &ps_argc, &ti->error);
++	if (r) {
++		dm_put_path_selector(pst);
++		return -EINVAL;
++	}
++
++	r = pst->create(&pg->ps, ps_argc, as->argv);
++	if (r) {
++		dm_put_path_selector(pst);
++		ti->error = "path selector constructor failed";
++		return r;
++	}
++
++	pg->ps.type = pst;
++	dm_consume_args(as, ps_argc);
++
++	return 0;
++}
++
++static int setup_scsi_dh(struct block_device *bdev, struct multipath *m,
++			 const char **attached_handler_name, char **error)
++{
++	struct request_queue *q = bdev_get_queue(bdev);
++	int r;
++
++	if (test_bit(MPATHF_RETAIN_ATTACHED_HW_HANDLER, &m->flags)) {
++retain:
++		if (*attached_handler_name) {
++			/*
++			 * Clear any hw_handler_params associated with a
++			 * handler that isn't already attached.
++			 */
++			if (m->hw_handler_name && strcmp(*attached_handler_name, m->hw_handler_name)) {
++				kfree(m->hw_handler_params);
++				m->hw_handler_params = NULL;
++			}
++
++			/*
++			 * Reset hw_handler_name to match the attached handler
++			 *
++			 * NB. This modifies the table line to show the actual
++			 * handler instead of the original table passed in.
++			 */
++			kfree(m->hw_handler_name);
++			m->hw_handler_name = *attached_handler_name;
++			*attached_handler_name = NULL;
++		}
++	}
++
++	if (m->hw_handler_name) {
++		r = scsi_dh_attach(q, m->hw_handler_name);
++		if (r == -EBUSY) {
++			char b[BDEVNAME_SIZE];
++
++			printk(KERN_INFO "dm-mpath: retaining handler on device %s\n",
++			       bdevname(bdev, b));
++			goto retain;
++		}
++		if (r < 0) {
++			*error = "error attaching hardware handler";
++			return r;
++		}
++
++		if (m->hw_handler_params) {
++			r = scsi_dh_set_params(q, m->hw_handler_params);
++			if (r < 0) {
++				*error = "unable to set hardware handler parameters";
++				return r;
++			}
++		}
++	}
++
++	return 0;
++}
++
++static struct pgpath *parse_path(struct dm_arg_set *as, struct path_selector *ps,
++				 struct dm_target *ti)
++{
++	int r;
++	struct pgpath *p;
++	struct multipath *m = ti->private;
++	struct request_queue *q;
++	const char *attached_handler_name = NULL;
++
++	/* we need at least a path arg */
++	if (as->argc < 1) {
++		ti->error = "no device given";
++		return ERR_PTR(-EINVAL);
++	}
++
++	p = alloc_pgpath();
++	if (!p)
++		return ERR_PTR(-ENOMEM);
++
++	r = dm_get_device(ti, dm_shift_arg(as), dm_table_get_mode(ti->table),
++			  &p->path.dev);
++	if (r) {
++		ti->error = "error getting device";
++		goto bad;
++	}
++
++	q = bdev_get_queue(p->path.dev->bdev);
++	attached_handler_name = scsi_dh_attached_handler_name(q, GFP_KERNEL);
++	if (attached_handler_name || m->hw_handler_name) {
++		INIT_DELAYED_WORK(&p->activate_path, activate_path_work);
++		r = setup_scsi_dh(p->path.dev->bdev, m, &attached_handler_name, &ti->error);
++		kfree(attached_handler_name);
++		if (r) {
++			dm_put_device(ti, p->path.dev);
++			goto bad;
++		}
++	}
++
++	r = ps->type->add_path(ps, &p->path, as->argc, as->argv, &ti->error);
++	if (r) {
++		dm_put_device(ti, p->path.dev);
++		goto bad;
++	}
++
++	return p;
++ bad:
++	free_pgpath(p);
++	return ERR_PTR(r);
++}
++
++static struct priority_group *parse_priority_group(struct dm_arg_set *as,
++						   struct multipath *m)
++{
++	static const struct dm_arg _args[] = {
++		{1, 1024, "invalid number of paths"},
++		{0, 1024, "invalid number of selector args"}
++	};
++
++	int r;
++	unsigned i, nr_selector_args, nr_args;
++	struct priority_group *pg;
++	struct dm_target *ti = m->ti;
++
++	if (as->argc < 2) {
++		as->argc = 0;
++		ti->error = "not enough priority group arguments";
++		return ERR_PTR(-EINVAL);
++	}
++
++	pg = alloc_priority_group();
++	if (!pg) {
++		ti->error = "couldn't allocate priority group";
++		return ERR_PTR(-ENOMEM);
++	}
++	pg->m = m;
++
++	r = parse_path_selector(as, pg, ti);
++	if (r)
++		goto bad;
++
++	/*
++	 * read the paths
++	 */
++	r = dm_read_arg(_args, as, &pg->nr_pgpaths, &ti->error);
++	if (r)
++		goto bad;
++
++	r = dm_read_arg(_args + 1, as, &nr_selector_args, &ti->error);
++	if (r)
++		goto bad;
++
++	nr_args = 1 + nr_selector_args;
++	for (i = 0; i < pg->nr_pgpaths; i++) {
++		struct pgpath *pgpath;
++		struct dm_arg_set path_args;
++
++		if (as->argc < nr_args) {
++			ti->error = "not enough path parameters";
++			r = -EINVAL;
++			goto bad;
++		}
++
++		path_args.argc = nr_args;
++		path_args.argv = as->argv;
++
++		pgpath = parse_path(&path_args, &pg->ps, ti);
++		if (IS_ERR(pgpath)) {
++			r = PTR_ERR(pgpath);
++			goto bad;
++		}
++
++		pgpath->pg = pg;
++		list_add_tail(&pgpath->list, &pg->pgpaths);
++		dm_consume_args(as, nr_args);
++	}
++
++	return pg;
++
++ bad:
++	free_priority_group(pg, ti);
++	return ERR_PTR(r);
++}
++
++static int parse_hw_handler(struct dm_arg_set *as, struct multipath *m)
++{
++	unsigned hw_argc;
++	int ret;
++	struct dm_target *ti = m->ti;
++
++	static const struct dm_arg _args[] = {
++		{0, 1024, "invalid number of hardware handler args"},
++	};
++
++	if (dm_read_arg_group(_args, as, &hw_argc, &ti->error))
++		return -EINVAL;
++
++	if (!hw_argc)
++		return 0;
++
++	if (m->queue_mode == DM_TYPE_BIO_BASED) {
++		dm_consume_args(as, hw_argc);
++		DMERR("bio-based multipath doesn't allow hardware handler args");
++		return 0;
++	}
++
++	m->hw_handler_name = kstrdup(dm_shift_arg(as), GFP_KERNEL);
++	if (!m->hw_handler_name)
++		return -EINVAL;
++
++	if (hw_argc > 1) {
++		char *p;
++		int i, j, len = 4;
++
++		for (i = 0; i <= hw_argc - 2; i++)
++			len += strlen(as->argv[i]) + 1;
++		p = m->hw_handler_params = kzalloc(len, GFP_KERNEL);
++		if (!p) {
++			ti->error = "memory allocation failed";
++			ret = -ENOMEM;
++			goto fail;
++		}
++		j = sprintf(p, "%d", hw_argc - 1);
++		for (i = 0, p+=j+1; i <= hw_argc - 2; i++, p+=j+1)
++			j = sprintf(p, "%s", as->argv[i]);
++	}
++	dm_consume_args(as, hw_argc - 1);
++
++	return 0;
++fail:
++	kfree(m->hw_handler_name);
++	m->hw_handler_name = NULL;
++	return ret;
++}
++
++static int parse_features(struct dm_arg_set *as, struct multipath *m)
++{
++	int r;
++	unsigned argc;
++	struct dm_target *ti = m->ti;
++	const char *arg_name;
++
++	static const struct dm_arg _args[] = {
++		{0, 8, "invalid number of feature args"},
++		{1, 50, "pg_init_retries must be between 1 and 50"},
++		{0, 60000, "pg_init_delay_msecs must be between 0 and 60000"},
++	};
++
++	r = dm_read_arg_group(_args, as, &argc, &ti->error);
++	if (r)
++		return -EINVAL;
++
++	if (!argc)
++		return 0;
++
++	do {
++		arg_name = dm_shift_arg(as);
++		argc--;
++
++		if (!strcasecmp(arg_name, "queue_if_no_path")) {
++			r = queue_if_no_path(m, true, false);
++			continue;
++		}
++
++		if (!strcasecmp(arg_name, "retain_attached_hw_handler")) {
++			set_bit(MPATHF_RETAIN_ATTACHED_HW_HANDLER, &m->flags);
++			continue;
++		}
++
++		if (!strcasecmp(arg_name, "pg_init_retries") &&
++		    (argc >= 1)) {
++			r = dm_read_arg(_args + 1, as, &m->pg_init_retries, &ti->error);
++			argc--;
++			continue;
++		}
++
++		if (!strcasecmp(arg_name, "pg_init_delay_msecs") &&
++		    (argc >= 1)) {
++			r = dm_read_arg(_args + 2, as, &m->pg_init_delay_msecs, &ti->error);
++			argc--;
++			continue;
++		}
++
++		if (!strcasecmp(arg_name, "queue_mode") &&
++		    (argc >= 1)) {
++			const char *queue_mode_name = dm_shift_arg(as);
++
++			if (!strcasecmp(queue_mode_name, "bio"))
++				m->queue_mode = DM_TYPE_BIO_BASED;
++			else if (!strcasecmp(queue_mode_name, "rq") ||
++				 !strcasecmp(queue_mode_name, "mq"))
++				m->queue_mode = DM_TYPE_REQUEST_BASED;
++			else {
++				ti->error = "Unknown 'queue_mode' requested";
++				r = -EINVAL;
++			}
++			argc--;
++			continue;
++		}
++
++		ti->error = "Unrecognised multipath feature request";
++		r = -EINVAL;
++	} while (argc && !r);
++
++	return r;
++}
++
++static int multipath_ctr(struct dm_target *ti, unsigned argc, char **argv)
++{
++	/* target arguments */
++	static const struct dm_arg _args[] = {
++		{0, 1024, "invalid number of priority groups"},
++		{0, 1024, "invalid initial priority group number"},
++	};
++
++	int r;
++	struct multipath *m;
++	struct dm_arg_set as;
++	unsigned pg_count = 0;
++	unsigned next_pg_num;
++	unsigned long flags;
++
++	as.argc = argc;
++	as.argv = argv;
++
++	m = alloc_multipath(ti);
++	if (!m) {
++		ti->error = "can't allocate multipath";
++		return -EINVAL;
++	}
++
++	r = parse_features(&as, m);
++	if (r)
++		goto bad;
++
++	r = alloc_multipath_stage2(ti, m);
++	if (r)
++		goto bad;
++
++	r = parse_hw_handler(&as, m);
++	if (r)
++		goto bad;
++
++	r = dm_read_arg(_args, &as, &m->nr_priority_groups, &ti->error);
++	if (r)
++		goto bad;
++
++	r = dm_read_arg(_args + 1, &as, &next_pg_num, &ti->error);
++	if (r)
++		goto bad;
++
++	if ((!m->nr_priority_groups && next_pg_num) ||
++	    (m->nr_priority_groups && !next_pg_num)) {
++		ti->error = "invalid initial priority group";
++		r = -EINVAL;
++		goto bad;
++	}
++
++	/* parse the priority groups */
++	while (as.argc) {
++		struct priority_group *pg;
++		unsigned nr_valid_paths = atomic_read(&m->nr_valid_paths);
++
++		pg = parse_priority_group(&as, m);
++		if (IS_ERR(pg)) {
++			r = PTR_ERR(pg);
++			goto bad;
++		}
++
++		nr_valid_paths += pg->nr_pgpaths;
++		atomic_set(&m->nr_valid_paths, nr_valid_paths);
++
++		list_add_tail(&pg->list, &m->priority_groups);
++		pg_count++;
++		pg->pg_num = pg_count;
++		if (!--next_pg_num)
++			m->next_pg = pg;
++	}
++
++	if (pg_count != m->nr_priority_groups) {
++		ti->error = "priority group count mismatch";
++		r = -EINVAL;
++		goto bad;
++	}
++
++	spin_lock_irqsave(&m->lock, flags);
++	enable_nopath_timeout(m);
++	spin_unlock_irqrestore(&m->lock, flags);
++
++	ti->num_flush_bios = 1;
++	ti->num_discard_bios = 1;
++	ti->num_write_same_bios = 1;
++	ti->num_write_zeroes_bios = 1;
++	if (m->queue_mode == DM_TYPE_BIO_BASED)
++		ti->per_io_data_size = multipath_per_bio_data_size();
++	else
++		ti->per_io_data_size = sizeof(struct dm_mpath_io);
++
++	return 0;
++
++ bad:
++	free_multipath(m);
++	return r;
++}
++
++static void multipath_wait_for_pg_init_completion(struct multipath *m)
++{
++	DEFINE_WAIT(wait);
++
++	while (1) {
++		prepare_to_wait(&m->pg_init_wait, &wait, TASK_UNINTERRUPTIBLE);
++
++		if (!atomic_read(&m->pg_init_in_progress))
++			break;
++
++		io_schedule();
++	}
++	finish_wait(&m->pg_init_wait, &wait);
++}
++
++static void flush_multipath_work(struct multipath *m)
++{
++	if (m->hw_handler_name) {
++		set_bit(MPATHF_PG_INIT_DISABLED, &m->flags);
++		smp_mb__after_atomic();
++
++		if (atomic_read(&m->pg_init_in_progress))
++			flush_workqueue(kmpath_handlerd);
++		multipath_wait_for_pg_init_completion(m);
++
++		clear_bit(MPATHF_PG_INIT_DISABLED, &m->flags);
++		smp_mb__after_atomic();
++	}
++
++	if (m->queue_mode == DM_TYPE_BIO_BASED)
++		flush_work(&m->process_queued_bios);
++	flush_work(&m->trigger_event);
++}
++
++static void multipath_dtr(struct dm_target *ti)
++{
++	struct multipath *m = ti->private;
++
++	disable_nopath_timeout(m);
++	flush_multipath_work(m);
++	free_multipath(m);
++}
++
++/*
++ * Take a path out of use.
++ */
++static int fail_path(struct pgpath *pgpath)
++{
++	unsigned long flags;
++	struct multipath *m = pgpath->pg->m;
++
++	spin_lock_irqsave(&m->lock, flags);
++
++	if (!pgpath->is_active)
++		goto out;
++
++	DMWARN("Failing path %s.", pgpath->path.dev->name);
++
++	pgpath->pg->ps.type->fail_path(&pgpath->pg->ps, &pgpath->path);
++	pgpath->is_active = false;
++	pgpath->fail_count++;
++
++	atomic_dec(&m->nr_valid_paths);
++
++	if (pgpath == m->current_pgpath)
++		m->current_pgpath = NULL;
++
++	dm_path_uevent(DM_UEVENT_PATH_FAILED, m->ti,
++		       pgpath->path.dev->name, atomic_read(&m->nr_valid_paths));
++
++	schedule_work(&m->trigger_event);
++
++	enable_nopath_timeout(m);
++
++out:
++	spin_unlock_irqrestore(&m->lock, flags);
++
++	return 0;
++}
++
++/*
++ * Reinstate a previously-failed path
++ */
++static int reinstate_path(struct pgpath *pgpath)
++{
++	int r = 0, run_queue = 0;
++	unsigned long flags;
++	struct multipath *m = pgpath->pg->m;
++	unsigned nr_valid_paths;
++
++	spin_lock_irqsave(&m->lock, flags);
++
++	if (pgpath->is_active)
++		goto out;
++
++	DMWARN("Reinstating path %s.", pgpath->path.dev->name);
++
++	r = pgpath->pg->ps.type->reinstate_path(&pgpath->pg->ps, &pgpath->path);
++	if (r)
++		goto out;
++
++	pgpath->is_active = true;
++
++	nr_valid_paths = atomic_inc_return(&m->nr_valid_paths);
++	if (nr_valid_paths == 1) {
++		m->current_pgpath = NULL;
++		run_queue = 1;
++	} else if (m->hw_handler_name && (m->current_pg == pgpath->pg)) {
++		if (queue_work(kmpath_handlerd, &pgpath->activate_path.work))
++			atomic_inc(&m->pg_init_in_progress);
++	}
++
++	dm_path_uevent(DM_UEVENT_PATH_REINSTATED, m->ti,
++		       pgpath->path.dev->name, nr_valid_paths);
++
++	schedule_work(&m->trigger_event);
++
++out:
++	spin_unlock_irqrestore(&m->lock, flags);
++	if (run_queue) {
++		dm_table_run_md_queue_async(m->ti->table);
++		process_queued_io_list(m);
++	}
++
++	if (pgpath->is_active)
++		disable_nopath_timeout(m);
++
++	return r;
++}
++
++/*
++ * Fail or reinstate all paths that match the provided struct dm_dev.
++ */
++static int action_dev(struct multipath *m, struct dm_dev *dev,
++		      action_fn action)
++{
++	int r = -EINVAL;
++	struct pgpath *pgpath;
++	struct priority_group *pg;
++
++	list_for_each_entry(pg, &m->priority_groups, list) {
++		list_for_each_entry(pgpath, &pg->pgpaths, list) {
++			if (pgpath->path.dev == dev)
++				r = action(pgpath);
++		}
++	}
++
++	return r;
++}
++
++/*
++ * Temporarily try to avoid having to use the specified PG
++ */
++static void bypass_pg(struct multipath *m, struct priority_group *pg,
++		      bool bypassed)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&m->lock, flags);
++
++	pg->bypassed = bypassed;
++	m->current_pgpath = NULL;
++	m->current_pg = NULL;
++
++	spin_unlock_irqrestore(&m->lock, flags);
++
++	schedule_work(&m->trigger_event);
++}
++
++/*
++ * Switch to using the specified PG from the next I/O that gets mapped
++ */
++static int switch_pg_num(struct multipath *m, const char *pgstr)
++{
++	struct priority_group *pg;
++	unsigned pgnum;
++	unsigned long flags;
++	char dummy;
++
++	if (!pgstr || (sscanf(pgstr, "%u%c", &pgnum, &dummy) != 1) || !pgnum ||
++	    !m->nr_priority_groups || (pgnum > m->nr_priority_groups)) {
++		DMWARN("invalid PG number supplied to switch_pg_num");
++		return -EINVAL;
++	}
++
++	spin_lock_irqsave(&m->lock, flags);
++	list_for_each_entry(pg, &m->priority_groups, list) {
++		pg->bypassed = false;
++		if (--pgnum)
++			continue;
++
++		m->current_pgpath = NULL;
++		m->current_pg = NULL;
++		m->next_pg = pg;
++	}
++	spin_unlock_irqrestore(&m->lock, flags);
++
++	schedule_work(&m->trigger_event);
++	return 0;
++}
++
++/*
++ * Set/clear bypassed status of a PG.
++ * PGs are numbered upwards from 1 in the order they were declared.
++ */
++static int bypass_pg_num(struct multipath *m, const char *pgstr, bool bypassed)
++{
++	struct priority_group *pg;
++	unsigned pgnum;
++	char dummy;
++
++	if (!pgstr || (sscanf(pgstr, "%u%c", &pgnum, &dummy) != 1) || !pgnum ||
++	    !m->nr_priority_groups || (pgnum > m->nr_priority_groups)) {
++		DMWARN("invalid PG number supplied to bypass_pg");
++		return -EINVAL;
++	}
++
++	list_for_each_entry(pg, &m->priority_groups, list) {
++		if (!--pgnum)
++			break;
++	}
++
++	bypass_pg(m, pg, bypassed);
++	return 0;
++}
++
++/*
++ * Should we retry pg_init immediately?
++ */
++static bool pg_init_limit_reached(struct multipath *m, struct pgpath *pgpath)
++{
++	unsigned long flags;
++	bool limit_reached = false;
++
++	spin_lock_irqsave(&m->lock, flags);
++
++	if (atomic_read(&m->pg_init_count) <= m->pg_init_retries &&
++	    !test_bit(MPATHF_PG_INIT_DISABLED, &m->flags))
++		set_bit(MPATHF_PG_INIT_REQUIRED, &m->flags);
++	else
++		limit_reached = true;
++
++	spin_unlock_irqrestore(&m->lock, flags);
++
++	return limit_reached;
++}
++
++static void pg_init_done(void *data, int errors)
++{
++	struct pgpath *pgpath = data;
++	struct priority_group *pg = pgpath->pg;
++	struct multipath *m = pg->m;
++	unsigned long flags;
++	bool delay_retry = false;
++
++	/* device or driver problems */
++	switch (errors) {
++	case SCSI_DH_OK:
++		break;
++	case SCSI_DH_NOSYS:
++		if (!m->hw_handler_name) {
++			errors = 0;
++			break;
++		}
++		DMERR("Could not failover the device: Handler scsi_dh_%s "
++		      "Error %d.", m->hw_handler_name, errors);
++		/*
++		 * Fail path for now, so we do not ping pong
++		 */
++		fail_path(pgpath);
++		break;
++	case SCSI_DH_DEV_TEMP_BUSY:
++		/*
++		 * Probably doing something like FW upgrade on the
++		 * controller so try the other pg.
++		 */
++		bypass_pg(m, pg, true);
++		break;
++	case SCSI_DH_RETRY:
++		/* Wait before retrying. */
++		delay_retry = true;
++		/* fall through */
++	case SCSI_DH_IMM_RETRY:
++	case SCSI_DH_RES_TEMP_UNAVAIL:
++		if (pg_init_limit_reached(m, pgpath))
++			fail_path(pgpath);
++		errors = 0;
++		break;
++	case SCSI_DH_DEV_OFFLINED:
++	default:
++		/*
++		 * We probably do not want to fail the path for a device
++		 * error, but this is what the old dm did. In future
++		 * patches we can do more advanced handling.
++		 */
++		fail_path(pgpath);
++	}
++
++	spin_lock_irqsave(&m->lock, flags);
++	if (errors) {
++		if (pgpath == m->current_pgpath) {
++			DMERR("Could not failover device. Error %d.", errors);
++			m->current_pgpath = NULL;
++			m->current_pg = NULL;
++		}
++	} else if (!test_bit(MPATHF_PG_INIT_REQUIRED, &m->flags))
++		pg->bypassed = false;
++
++	if (atomic_dec_return(&m->pg_init_in_progress) > 0)
++		/* Activations of other paths are still on going */
++		goto out;
++
++	if (test_bit(MPATHF_PG_INIT_REQUIRED, &m->flags)) {
++		if (delay_retry)
++			set_bit(MPATHF_PG_INIT_DELAY_RETRY, &m->flags);
++		else
++			clear_bit(MPATHF_PG_INIT_DELAY_RETRY, &m->flags);
++
++		if (__pg_init_all_paths(m))
++			goto out;
++	}
++	clear_bit(MPATHF_QUEUE_IO, &m->flags);
++
++	process_queued_io_list(m);
++
++	/*
++	 * Wake up any thread waiting to suspend.
++	 */
++	wake_up(&m->pg_init_wait);
++
++out:
++	spin_unlock_irqrestore(&m->lock, flags);
++}
++
++static void activate_or_offline_path(struct pgpath *pgpath)
++{
++	struct request_queue *q = bdev_get_queue(pgpath->path.dev->bdev);
++
++	if (pgpath->is_active && !blk_queue_dying(q))
++		scsi_dh_activate(q, pg_init_done, pgpath);
++	else
++		pg_init_done(pgpath, SCSI_DH_DEV_OFFLINED);
++}
++
++static void activate_path_work(struct work_struct *work)
++{
++	struct pgpath *pgpath =
++		container_of(work, struct pgpath, activate_path.work);
++
++	activate_or_offline_path(pgpath);
++}
++
++static int multipath_end_io(struct dm_target *ti, struct request *clone,
++			    blk_status_t error, union map_info *map_context)
++{
++	struct dm_mpath_io *mpio = get_mpio(map_context);
++	struct pgpath *pgpath = mpio->pgpath;
++	int r = DM_ENDIO_DONE;
++
++	/*
++	 * We don't queue any clone request inside the multipath target
++	 * during end I/O handling, since those clone requests don't have
++	 * bio clones.  If we queue them inside the multipath target,
++	 * we need to make bio clones, that requires memory allocation.
++	 * (See drivers/md/dm-rq.c:end_clone_bio() about why the clone requests
++	 *  don't have bio clones.)
++	 * Instead of queueing the clone request here, we queue the original
++	 * request into dm core, which will remake a clone request and
++	 * clone bios for it and resubmit it later.
++	 */
++	if (error && blk_path_error(error)) {
++		struct multipath *m = ti->private;
++
++		if (error == BLK_STS_RESOURCE)
++			r = DM_ENDIO_DELAY_REQUEUE;
++		else
++			r = DM_ENDIO_REQUEUE;
++
++		if (pgpath)
++			fail_path(pgpath);
++
++		if (atomic_read(&m->nr_valid_paths) == 0 &&
++		    !must_push_back_rq(m)) {
++			if (error == BLK_STS_IOERR)
++				dm_report_EIO(m);
++			/* complete with the original error */
++			r = DM_ENDIO_DONE;
++		}
++	}
++
++	if (pgpath) {
++		struct path_selector *ps = &pgpath->pg->ps;
++
++		if (ps->type->end_io)
++			ps->type->end_io(ps, &pgpath->path, mpio->nr_bytes);
++	}
++
++	return r;
++}
++
++static int multipath_end_io_bio(struct dm_target *ti, struct bio *clone,
++				blk_status_t *error)
++{
++	struct multipath *m = ti->private;
++	struct dm_mpath_io *mpio = get_mpio_from_bio(clone);
++	struct pgpath *pgpath = mpio->pgpath;
++	unsigned long flags;
++	int r = DM_ENDIO_DONE;
++
++	if (!*error || !blk_path_error(*error))
++		goto done;
++
++	if (pgpath)
++		fail_path(pgpath);
++
++	if (atomic_read(&m->nr_valid_paths) == 0 &&
++	    !test_bit(MPATHF_QUEUE_IF_NO_PATH, &m->flags)) {
++		if (must_push_back_bio(m)) {
++			r = DM_ENDIO_REQUEUE;
++		} else {
++			dm_report_EIO(m);
++			*error = BLK_STS_IOERR;
++		}
++		goto done;
++	}
++
++	spin_lock_irqsave(&m->lock, flags);
++	bio_list_add(&m->queued_bios, clone);
++	spin_unlock_irqrestore(&m->lock, flags);
++	if (!test_bit(MPATHF_QUEUE_IO, &m->flags))
++		queue_work(kmultipathd, &m->process_queued_bios);
++
++	r = DM_ENDIO_INCOMPLETE;
++done:
++	if (pgpath) {
++		struct path_selector *ps = &pgpath->pg->ps;
++
++		if (ps->type->end_io)
++			ps->type->end_io(ps, &pgpath->path, mpio->nr_bytes);
++	}
++
++	return r;
++}
++
++/*
++ * Suspend can't complete until all the I/O is processed so if
++ * the last path fails we must error any remaining I/O.
++ * Note that if the freeze_bdev fails while suspending, the
++ * queue_if_no_path state is lost - userspace should reset it.
++ */
++static void multipath_presuspend(struct dm_target *ti)
++{
++	struct multipath *m = ti->private;
++
++	queue_if_no_path(m, false, true);
++}
++
++static void multipath_postsuspend(struct dm_target *ti)
++{
++	struct multipath *m = ti->private;
++
++	mutex_lock(&m->work_mutex);
++	flush_multipath_work(m);
++	mutex_unlock(&m->work_mutex);
++}
++
++/*
++ * Restore the queue_if_no_path setting.
++ */
++static void multipath_resume(struct dm_target *ti)
++{
++	struct multipath *m = ti->private;
++	unsigned long flags;
++
++	spin_lock_irqsave(&m->lock, flags);
++	assign_bit(MPATHF_QUEUE_IF_NO_PATH, &m->flags,
++		   test_bit(MPATHF_SAVED_QUEUE_IF_NO_PATH, &m->flags));
++	spin_unlock_irqrestore(&m->lock, flags);
++}
++
++/*
++ * Info output has the following format:
++ * num_multipath_feature_args [multipath_feature_args]*
++ * num_handler_status_args [handler_status_args]*
++ * num_groups init_group_number
++ *            [A|D|E num_ps_status_args [ps_status_args]*
++ *             num_paths num_selector_args
++ *             [path_dev A|F fail_count [selector_args]* ]+ ]+
++ *
++ * Table output has the following format (identical to the constructor string):
++ * num_feature_args [features_args]*
++ * num_handler_args hw_handler [hw_handler_args]*
++ * num_groups init_group_number
++ *     [priority selector-name num_ps_args [ps_args]*
++ *      num_paths num_selector_args [path_dev [selector_args]* ]+ ]+
++ */
++static void multipath_status(struct dm_target *ti, status_type_t type,
++			     unsigned status_flags, char *result, unsigned maxlen)
++{
++	int sz = 0;
++	unsigned long flags;
++	struct multipath *m = ti->private;
++	struct priority_group *pg;
++	struct pgpath *p;
++	unsigned pg_num;
++	char state;
++
++	spin_lock_irqsave(&m->lock, flags);
++
++	/* Features */
++	if (type == STATUSTYPE_INFO)
++		DMEMIT("2 %u %u ", test_bit(MPATHF_QUEUE_IO, &m->flags),
++		       atomic_read(&m->pg_init_count));
++	else {
++		DMEMIT("%u ", test_bit(MPATHF_QUEUE_IF_NO_PATH, &m->flags) +
++			      (m->pg_init_retries > 0) * 2 +
++			      (m->pg_init_delay_msecs != DM_PG_INIT_DELAY_DEFAULT) * 2 +
++			      test_bit(MPATHF_RETAIN_ATTACHED_HW_HANDLER, &m->flags) +
++			      (m->queue_mode != DM_TYPE_REQUEST_BASED) * 2);
++
++		if (test_bit(MPATHF_QUEUE_IF_NO_PATH, &m->flags))
++			DMEMIT("queue_if_no_path ");
++		if (m->pg_init_retries)
++			DMEMIT("pg_init_retries %u ", m->pg_init_retries);
++		if (m->pg_init_delay_msecs != DM_PG_INIT_DELAY_DEFAULT)
++			DMEMIT("pg_init_delay_msecs %u ", m->pg_init_delay_msecs);
++		if (test_bit(MPATHF_RETAIN_ATTACHED_HW_HANDLER, &m->flags))
++			DMEMIT("retain_attached_hw_handler ");
++		if (m->queue_mode != DM_TYPE_REQUEST_BASED) {
++			switch(m->queue_mode) {
++			case DM_TYPE_BIO_BASED:
++				DMEMIT("queue_mode bio ");
++				break;
++			default:
++				WARN_ON_ONCE(true);
++				break;
++			}
++		}
++	}
++
++	if (!m->hw_handler_name || type == STATUSTYPE_INFO)
++		DMEMIT("0 ");
++	else
++		DMEMIT("1 %s ", m->hw_handler_name);
++
++	DMEMIT("%u ", m->nr_priority_groups);
++
++	if (m->next_pg)
++		pg_num = m->next_pg->pg_num;
++	else if (m->current_pg)
++		pg_num = m->current_pg->pg_num;
++	else
++		pg_num = (m->nr_priority_groups ? 1 : 0);
++
++	DMEMIT("%u ", pg_num);
++
++	switch (type) {
++	case STATUSTYPE_INFO:
++		list_for_each_entry(pg, &m->priority_groups, list) {
++			if (pg->bypassed)
++				state = 'D';	/* Disabled */
++			else if (pg == m->current_pg)
++				state = 'A';	/* Currently Active */
++			else
++				state = 'E';	/* Enabled */
++
++			DMEMIT("%c ", state);
++
++			if (pg->ps.type->status)
++				sz += pg->ps.type->status(&pg->ps, NULL, type,
++							  result + sz,
++							  maxlen - sz);
++			else
++				DMEMIT("0 ");
++
++			DMEMIT("%u %u ", pg->nr_pgpaths,
++			       pg->ps.type->info_args);
++
++			list_for_each_entry(p, &pg->pgpaths, list) {
++				DMEMIT("%s %s %u ", p->path.dev->name,
++				       p->is_active ? "A" : "F",
++				       p->fail_count);
++				if (pg->ps.type->status)
++					sz += pg->ps.type->status(&pg->ps,
++					      &p->path, type, result + sz,
++					      maxlen - sz);
++			}
++		}
++		break;
++
++	case STATUSTYPE_TABLE:
++		list_for_each_entry(pg, &m->priority_groups, list) {
++			DMEMIT("%s ", pg->ps.type->name);
++
++			if (pg->ps.type->status)
++				sz += pg->ps.type->status(&pg->ps, NULL, type,
++							  result + sz,
++							  maxlen - sz);
++			else
++				DMEMIT("0 ");
++
++			DMEMIT("%u %u ", pg->nr_pgpaths,
++			       pg->ps.type->table_args);
++
++			list_for_each_entry(p, &pg->pgpaths, list) {
++				DMEMIT("%s ", p->path.dev->name);
++				if (pg->ps.type->status)
++					sz += pg->ps.type->status(&pg->ps,
++					      &p->path, type, result + sz,
++					      maxlen - sz);
++			}
++		}
++		break;
++	}
++
++	spin_unlock_irqrestore(&m->lock, flags);
++}
++
++static int multipath_message(struct dm_target *ti, unsigned argc, char **argv,
++			     char *result, unsigned maxlen)
++{
++	int r = -EINVAL;
++	struct dm_dev *dev;
++	struct multipath *m = ti->private;
++	action_fn action;
++	unsigned long flags;
++
++	mutex_lock(&m->work_mutex);
++
++	if (dm_suspended(ti)) {
++		r = -EBUSY;
++		goto out;
++	}
++
++	if (argc == 1) {
++		if (!strcasecmp(argv[0], "queue_if_no_path")) {
++			r = queue_if_no_path(m, true, false);
++			spin_lock_irqsave(&m->lock, flags);
++			enable_nopath_timeout(m);
++			spin_unlock_irqrestore(&m->lock, flags);
++			goto out;
++		} else if (!strcasecmp(argv[0], "fail_if_no_path")) {
++			r = queue_if_no_path(m, false, false);
++			disable_nopath_timeout(m);
++			goto out;
++		}
++	}
++
++	if (argc != 2) {
++		DMWARN("Invalid multipath message arguments. Expected 2 arguments, got %d.", argc);
++		goto out;
++	}
++
++	if (!strcasecmp(argv[0], "disable_group")) {
++		r = bypass_pg_num(m, argv[1], true);
++		goto out;
++	} else if (!strcasecmp(argv[0], "enable_group")) {
++		r = bypass_pg_num(m, argv[1], false);
++		goto out;
++	} else if (!strcasecmp(argv[0], "switch_group")) {
++		r = switch_pg_num(m, argv[1]);
++		goto out;
++	} else if (!strcasecmp(argv[0], "reinstate_path"))
++		action = reinstate_path;
++	else if (!strcasecmp(argv[0], "fail_path"))
++		action = fail_path;
++	else {
++		DMWARN("Unrecognised multipath message received: %s", argv[0]);
++		goto out;
++	}
++
++	r = dm_get_device(ti, argv[1], dm_table_get_mode(ti->table), &dev);
++	if (r) {
++		DMWARN("message: error getting device %s",
++		       argv[1]);
++		goto out;
++	}
++
++	r = action_dev(m, dev, action);
++
++	dm_put_device(ti, dev);
++
++out:
++	mutex_unlock(&m->work_mutex);
++	return r;
++}
++
++static int multipath_prepare_ioctl(struct dm_target *ti,
++				   struct block_device **bdev)
++{
++	struct multipath *m = ti->private;
++	struct pgpath *current_pgpath;
++	int r;
++
++	current_pgpath = READ_ONCE(m->current_pgpath);
++	if (!current_pgpath)
++		current_pgpath = choose_pgpath(m, 0);
++
++	if (current_pgpath) {
++		if (!test_bit(MPATHF_QUEUE_IO, &m->flags)) {
++			*bdev = current_pgpath->path.dev->bdev;
++			r = 0;
++		} else {
++			/* pg_init has not started or completed */
++			r = -ENOTCONN;
++		}
++	} else {
++		/* No path is available */
++		if (test_bit(MPATHF_QUEUE_IF_NO_PATH, &m->flags))
++			r = -ENOTCONN;
++		else
++			r = -EIO;
++	}
++
++	if (r == -ENOTCONN) {
++		if (!READ_ONCE(m->current_pg)) {
++			/* Path status changed, redo selection */
++			(void) choose_pgpath(m, 0);
++		}
++		if (test_bit(MPATHF_PG_INIT_REQUIRED, &m->flags))
++			pg_init_all_paths(m);
++		dm_table_run_md_queue_async(m->ti->table);
++		process_queued_io_list(m);
++	}
++
++	/*
++	 * Only pass ioctls through if the device sizes match exactly.
++	 */
++	if (!r && ti->len != i_size_read((*bdev)->bd_inode) >> SECTOR_SHIFT)
++		return 1;
++	return r;
++}
++
++static int multipath_iterate_devices(struct dm_target *ti,
++				     iterate_devices_callout_fn fn, void *data)
++{
++	struct multipath *m = ti->private;
++	struct priority_group *pg;
++	struct pgpath *p;
++	int ret = 0;
++
++	list_for_each_entry(pg, &m->priority_groups, list) {
++		list_for_each_entry(p, &pg->pgpaths, list) {
++			ret = fn(ti, p->path.dev, ti->begin, ti->len, data);
++			if (ret)
++				goto out;
++		}
++	}
++
++out:
++	return ret;
++}
++
++static int pgpath_busy(struct pgpath *pgpath)
++{
++	struct request_queue *q = bdev_get_queue(pgpath->path.dev->bdev);
++
++	return blk_lld_busy(q);
++}
++
++/*
++ * We return "busy", only when we can map I/Os but underlying devices
++ * are busy (so even if we map I/Os now, the I/Os will wait on
++ * the underlying queue).
++ * In other words, if we want to kill I/Os or queue them inside us
++ * due to map unavailability, we don't return "busy".  Otherwise,
++ * dm core won't give us the I/Os and we can't do what we want.
++ */
++static int multipath_busy(struct dm_target *ti)
++{
++	bool busy = false, has_active = false;
++	struct multipath *m = ti->private;
++	struct priority_group *pg, *next_pg;
++	struct pgpath *pgpath;
++
++	/* pg_init in progress */
++	if (atomic_read(&m->pg_init_in_progress))
++		return true;
++
++	/* no paths available, for blk-mq: rely on IO mapping to delay requeue */
++	if (!atomic_read(&m->nr_valid_paths) && test_bit(MPATHF_QUEUE_IF_NO_PATH, &m->flags))
++		return (m->queue_mode != DM_TYPE_REQUEST_BASED);
++
++	/* Guess which priority_group will be used at next mapping time */
++	pg = READ_ONCE(m->current_pg);
++	next_pg = READ_ONCE(m->next_pg);
++	if (unlikely(!READ_ONCE(m->current_pgpath) && next_pg))
++		pg = next_pg;
++
++	if (!pg) {
++		/*
++		 * We don't know which pg will be used at next mapping time.
++		 * We don't call choose_pgpath() here to avoid to trigger
++		 * pg_init just by busy checking.
++		 * So we don't know whether underlying devices we will be using
++		 * at next mapping time are busy or not. Just try mapping.
++		 */
++		return busy;
++	}
++
++	/*
++	 * If there is one non-busy active path at least, the path selector
++	 * will be able to select it. So we consider such a pg as not busy.
++	 */
++	busy = true;
++	list_for_each_entry(pgpath, &pg->pgpaths, list) {
++		if (pgpath->is_active) {
++			has_active = true;
++			if (!pgpath_busy(pgpath)) {
++				busy = false;
++				break;
++			}
++		}
++	}
++
++	if (!has_active) {
++		/*
++		 * No active path in this pg, so this pg won't be used and
++		 * the current_pg will be changed at next mapping time.
++		 * We need to try mapping to determine it.
++		 */
++		busy = false;
++	}
++
++	return busy;
++}
++
++/*-----------------------------------------------------------------
++ * Module setup
++ *---------------------------------------------------------------*/
++static struct target_type multipath_target = {
++	.name = "multipath",
++	.version = {1, 14, 0},
++	.features = DM_TARGET_SINGLETON | DM_TARGET_IMMUTABLE |
++		    DM_TARGET_PASSES_INTEGRITY,
++	.module = THIS_MODULE,
++	.ctr = multipath_ctr,
++	.dtr = multipath_dtr,
++	.clone_and_map_rq = multipath_clone_and_map,
++	.release_clone_rq = multipath_release_clone,
++	.rq_end_io = multipath_end_io,
++	.map = multipath_map_bio,
++	.end_io = multipath_end_io_bio,
++	.presuspend = multipath_presuspend,
++	.postsuspend = multipath_postsuspend,
++	.resume = multipath_resume,
++	.status = multipath_status,
++	.message = multipath_message,
++	.prepare_ioctl = multipath_prepare_ioctl,
++	.iterate_devices = multipath_iterate_devices,
++	.busy = multipath_busy,
++};
++
++static int __init dm_multipath_init(void)
++{
++	int r;
++
++	kmultipathd = alloc_workqueue("kmpathd", WQ_MEM_RECLAIM, 0);
++	if (!kmultipathd) {
++		DMERR("failed to create workqueue kmpathd");
++		r = -ENOMEM;
++		goto bad_alloc_kmultipathd;
++	}
++
++	/*
++	 * A separate workqueue is used to handle the device handlers
++	 * to avoid overloading existing workqueue. Overloading the
++	 * old workqueue would also create a bottleneck in the
++	 * path of the storage hardware device activation.
++	 */
++	kmpath_handlerd = alloc_ordered_workqueue("kmpath_handlerd",
++						  WQ_MEM_RECLAIM);
++	if (!kmpath_handlerd) {
++		DMERR("failed to create workqueue kmpath_handlerd");
++		r = -ENOMEM;
++		goto bad_alloc_kmpath_handlerd;
++	}
++
++	r = dm_register_target(&multipath_target);
++	if (r < 0) {
++		DMERR("request-based register failed %d", r);
++		r = -EINVAL;
++		goto bad_register_target;
++	}
++
++	return 0;
++
++bad_register_target:
++	destroy_workqueue(kmpath_handlerd);
++bad_alloc_kmpath_handlerd:
++	destroy_workqueue(kmultipathd);
++bad_alloc_kmultipathd:
++	return r;
++}
++
++static void __exit dm_multipath_exit(void)
++{
++	destroy_workqueue(kmpath_handlerd);
++	destroy_workqueue(kmultipathd);
++
++	dm_unregister_target(&multipath_target);
++}
++
++module_init(dm_multipath_init);
++module_exit(dm_multipath_exit);
++
++module_param_named(queue_if_no_path_timeout_secs,
++		   queue_if_no_path_timeout_secs, ulong, S_IRUGO | S_IWUSR);
++MODULE_PARM_DESC(queue_if_no_path_timeout_secs, "No available paths queue IO timeout in seconds");
++
++MODULE_DESCRIPTION(DM_NAME " multipath target");
++MODULE_AUTHOR("Sistina Software <dm-devel@redhat.com>");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/nvme/host/Kconfig b/drivers/nvme/host/Kconfig
+index 9c17ed32be64..dcc3f0ddd45a 100644
+--- a/drivers/nvme/host/Kconfig
++++ b/drivers/nvme/host/Kconfig
+@@ -24,6 +24,19 @@ config NVME_MULTIPATH
+ 	   /dev/nvmeXnY device will show up for each NVMe namespaces,
+ 	   even if it is accessible through multiple controllers.
+ 
++config NVME_TREENVME
++	bool "treeNvme support"
++	depends on NVME_CORE
++	---help---
++	   This option allows for treenvme.
++
++config BPF_TREENVME
++	bool "Support for eBPF program attached to treenvme"
++	depends on BPF_SYSCALL
++	select NVME_TREENVME
++	help
++	   Allow attach eBPF programs.
++
+ config NVME_HWMON
+ 	bool "NVMe hardware monitoring"
+ 	depends on (NVME_CORE=y && HWMON=y) || (NVME_CORE=m && HWMON)
+diff --git a/drivers/nvme/host/Makefile b/drivers/nvme/host/Makefile
+index fc7b26be692d..17294b52b1f9 100644
+--- a/drivers/nvme/host/Makefile
++++ b/drivers/nvme/host/Makefile
+@@ -8,6 +8,8 @@ obj-$(CONFIG_NVME_FABRICS)		+= nvme-fabrics.o
+ obj-$(CONFIG_NVME_RDMA)			+= nvme-rdma.o
+ obj-$(CONFIG_NVME_FC)			+= nvme-fc.o
+ obj-$(CONFIG_NVME_TCP)			+= nvme-tcp.o
++#obj-$(CONFIG_NVME_TREENVME)		+= treenvme-core.o
++obj-$(CONFIG_BPF_TREENVME)		+= bpf-ddp.o
+ 
+ nvme-core-y				:= core.o
+ nvme-core-$(CONFIG_TRACING)		+= trace.o
+@@ -15,8 +17,12 @@ nvme-core-$(CONFIG_NVME_MULTIPATH)	+= multipath.o
+ nvme-core-$(CONFIG_NVM)			+= lightnvm.o
+ nvme-core-$(CONFIG_FAULT_INJECTION_DEBUG_FS)	+= fault_inject.o
+ nvme-core-$(CONFIG_NVME_HWMON)		+= hwmon.o
++nvme-core-$(CONFIG_NVME_TREENVME)	+= treenvme-core.o
++#nvme-core-$(CONFIG_BPF_TREENVME)	+= bpf-ddp.o
+ 
+ nvme-y					+= pci.o
++#nvme-tree-$(CONFIG_NVME_TREENVME)	+= core.o pci.o treenvme.o
++nvme-$(CONFIG_NVME_TREENVME)		+= treenvme.o
+ 
+ nvme-fabrics-y				+= fabrics.o
+ 
+diff --git a/drivers/nvme/host/api/treenvme_ioctl.h b/drivers/nvme/host/api/treenvme_ioctl.h
+new file mode 100644
+index 000000000000..cea6f5fbea55
+--- /dev/null
++++ b/drivers/nvme/host/api/treenvme_ioctl.h
+@@ -0,0 +1,89 @@
++#ifndef _UAPI_LINUX_TREENVME_IOCTL_H
++#define _UAPI_LINUX_TREENVME_IOCTL_H
++
++#include <linux/types.h>
++
++#define TREENVME_IOCTL '$'
++
++// taken from the original NVME ioctl
++struct treenvme_user_io {
++	__u8	opcode;
++	__u8	flags;
++	__u16	control;
++	__u16	nblocks;
++	__u16	rsvd;
++	__u64	metadata;
++	__u64	addr;
++	__u64	slba;
++	__u32	dsmgmt;
++	__u32	reftag;
++	__u16	apptag;
++	__u16	appmask;
++};
++
++struct treenvme_passthru_cmd {
++	__u8	opcode;
++	__u8	flags;
++	__u16	rsvd1;
++	__u32	nsid;
++	__u32	cdw2;
++	__u32	cdw3;
++	__u64	metadata;
++	__u64	addr;
++	__u32	metadata_len;
++	__u32	data_len;
++	__u32	cdw10;
++	__u32	cdw11;
++	__u32	cdw12;
++	__u32	cdw13;
++	__u32	cdw14;
++	__u32	cdw15;
++	__u32	timeout_ms;
++	__u32	result;
++};
++
++enum treenvme_translation_type {
++	TREENVME_TRANSLATION_NONE = 0,
++	TREENVME_TRANSLATION_CURRENT,
++	TREENVME_TRANSLATION_INPROGRESS,
++	TREENVME_TRANSLATION_CHECKPOINTED,
++	TREENVME_TRANSLATION_DEBUG
++};
++
++struct treenvme_block_struct { int64_t b; };
++
++struct treenvme_block_translation_pair {
++	union {
++		uint64_t diskoff;
++		struct treenvme_block_struct free_blocknum;	
++	} u;
++
++	uint64_t size;
++};
++
++struct treenvme_block_table {
++	int64_t length_of_array;
++	unsigned long *arr;
++};
++
++struct treenvme_block_toku_table {
++	enum treenvme_translation_type type;
++	int64_t length_of_array;
++	struct treenvme_block_struct smallest;
++	struct treenvme_block_struct next_head;
++	struct treenvme_block_translation_pair *block_translation;
++};
++
++struct treenvme_params {
++	uint32_t flags;
++	uint32_t num;
++};
++
++// possible IOCTL commands
++#define TREENVME_IOCTL_ID			_IO('$', 0x50)
++#define TREENVME_IOCTL_SUBMIT_IO 		_IOWR('$', 0x51, struct treenvme_user_io)
++#define TREENVME_IOCTL_IO_CMD 			_IOWR('$', 0x52, struct treenvme_passthru_cmd)
++#define TREENVME_IOCTL_SETUP 			_IOWR('$', 0x53, struct treenvme_params)
++#define TREENVME_IOCTL_REGISTER_BLOCKTABLE	_IOWR('$', 0x54, struct treenvme_block_table)
++#define TREENVME_IOCTL_REGISTER_TOKU_BLOCKTABLE	_IOWR('$', 0x55, struct treenvme_block_toku_table)
++#endif
+diff --git a/drivers/nvme/host/bpf-ddp.c b/drivers/nvme/host/bpf-ddp.c
+new file mode 100644
+index 000000000000..d3d187f04e6b
+--- /dev/null
++++ b/drivers/nvme/host/bpf-ddp.c
+@@ -0,0 +1,70 @@
++/*@ddp*/
++#include <linux/bpf.h>
++#include <linux/bpf_ddp.h>
++#include <linux/filter.h>
++
++struct atx{
++	int x;
++};
++
++struct mctx {
++	struct bpf_prog *ddp_prog;
++};
++
++static struct mctx *tctx;
++const struct bpf_prog_ops ddp_prog_ops = {};
++
++static const struct bpf_func_proto *
++ddp_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
++{
++	return bpf_base_func_proto(func_id);
++}
++		
++
++static bool ddp_is_valid_access(int off, int size, enum bpf_access_type type, const struct bpf_prog *prog, struct bpf_insn_access_aux *info){
++	return true;
++}
++
++const struct bpf_verifier_ops ddp_verifier_ops = {
++	.get_func_proto = ddp_func_proto,
++	.is_valid_access = ddp_is_valid_access,
++};
++
++static DEFINE_MUTEX(ddp_mutex);
++
++int ddp_prog_attach(const union bpf_attr *attr, struct bpf_prog *prog)
++{
++	printk(KERN_ERR "DDP PROG is attached.\n");
++	struct bpf_prog *attached;
++
++	mutex_lock(&ddp_mutex);
++	attached = rcu_dereference_protected(tctx->ddp_prog, lockdep_is_held(&ddp_mutex));
++
++	if (attached) {
++		mutex_unlock(&ddp_mutex);
++		return -EEXIST;
++	}
++
++	rcu_assign_pointer(tctx->ddp_prog, prog);
++       	mutex_unlock(&ddp_mutex);
++	return 0;	
++}
++
++int ddp_prog_detach(const union bpf_attr *attr)
++{
++       printk(KERN_ERR "DDP Prog is detached.");
++       struct bpf_prog *attached;
++
++       mutex_lock(&ddp_mutex);
++       attached = rcu_dereference_protected(tctx->ddp_prog, lockdep_is_held(%ddp_mutex));
++
++       if (!attached) {
++               mutex_unlock(&ddp_mutex);
++               return -ENOENT;
++       }
++
++       bpf_prog_put(attached);
++       RCU_INIT_POINTER(tctx->ddp_prog, NULL);
++       mutex_unlock(&ddp_mutex);
++       return 0;
++}
+diff --git a/drivers/nvme/host/core.c b/drivers/nvme/host/core.c
+index f3c037f5a9ba..29d477569ff2 100644
+--- a/drivers/nvme/host/core.c
++++ b/drivers/nvme/host/core.c
+@@ -776,6 +776,18 @@ blk_status_t nvme_setup_cmd(struct nvme_ns *ns, struct request *req,
+ 	}
+ 
+ 	cmd->common.command_id = req->tag;
++
++	// alter
++	/*
++	if (req->alter_count == 0)
++	{
++	}
++	*/
++	if (req->bio && req->bio->_imposter_level > 0) {
++		req->_imposter_command = *cmd;
++		req->first_command_id = cmd->common.command_id;
++	}
++	
+ 	trace_nvme_setup_cmd(req, cmd);
+ 	return ret;
+ }
+@@ -888,7 +900,7 @@ static void *nvme_add_user_metadata(struct bio *bio, void __user *ubuf,
+ 	return ERR_PTR(ret);
+ }
+ 
+-static int nvme_submit_user_cmd(struct request_queue *q,
++int nvme_submit_user_cmd(struct request_queue *q,
+ 		struct nvme_command *cmd, void __user *ubuffer,
+ 		unsigned bufflen, void __user *meta_buffer, unsigned meta_len,
+ 		u32 meta_seed, u64 *result, unsigned timeout)
+@@ -945,6 +957,7 @@ static int nvme_submit_user_cmd(struct request_queue *q,
+ 	blk_mq_free_request(req);
+ 	return ret;
+ }
++EXPORT_SYMBOL_GPL(nvme_submit_user_cmd);
+ 
+ static void nvme_keep_alive_end_io(struct request *rq, blk_status_t status)
+ {
+@@ -1143,7 +1156,7 @@ static int nvme_identify_ns_list(struct nvme_ctrl *dev, unsigned nsid, __le32 *n
+ 				    NVME_IDENTIFY_DATA_SIZE);
+ }
+ 
+-static int nvme_identify_ns(struct nvme_ctrl *ctrl,
++int nvme_identify_ns(struct nvme_ctrl *ctrl,
+ 		unsigned nsid, struct nvme_id_ns **id)
+ {
+ 	struct nvme_command c = { };
+@@ -1166,6 +1179,7 @@ static int nvme_identify_ns(struct nvme_ctrl *ctrl,
+ 
+ 	return error;
+ }
++EXPORT_SYMBOL_GPL(nvme_identify_ns);
+ 
+ static int nvme_features(struct nvme_ctrl *dev, u8 op, unsigned int fid,
+ 		unsigned int dword11, void *buffer, size_t buflen, u32 *result)
+@@ -1870,7 +1884,7 @@ static void nvme_update_disk_info(struct gendisk *disk,
+ 	blk_mq_unfreeze_queue(disk->queue);
+ }
+ 
+-static void __nvme_revalidate_disk(struct gendisk *disk, struct nvme_id_ns *id)
++void __nvme_revalidate_disk(struct gendisk *disk, struct nvme_id_ns *id)
+ {
+ 	struct nvme_ns *ns = disk->private_data;
+ 
+@@ -1908,6 +1922,7 @@ static void __nvme_revalidate_disk(struct gendisk *disk, struct nvme_id_ns *id)
+ 	}
+ #endif
+ }
++EXPORT_SYMBOL_GPL(__nvme_revalidate_disk);
+ 
+ static int nvme_revalidate_disk(struct gendisk *disk)
+ {
+@@ -2115,6 +2130,21 @@ const struct block_device_operations nvme_ns_head_ops = {
+ };
+ #endif /* CONFIG_NVME_MULTIPATH */
+ 
++
++#ifdef CONFIG_NVME_TREENVME
++const struct block_device_operations treenvme_fops = {
++	.owner		= THIS_MODULE,
++	.open		= nvme_open,
++	.release	= nvme_release,
++	.ioctl		= treenvme_ioctl,
++	.compat_ioctl	= nvme_compat_ioctl,
++	.getgeo		= nvme_getgeo,
++	.pr_ops		= &nvme_pr_ops,
++};
++EXPORT_SYMBOL_GPL(treenvme_fops);
++#endif
++
++
+ static int nvme_wait_ready(struct nvme_ctrl *ctrl, u64 cap, bool enabled)
+ {
+ 	unsigned long timeout =
+@@ -2236,7 +2266,7 @@ int nvme_shutdown_ctrl(struct nvme_ctrl *ctrl)
+ }
+ EXPORT_SYMBOL_GPL(nvme_shutdown_ctrl);
+ 
+-static void nvme_set_queue_limits(struct nvme_ctrl *ctrl,
++void nvme_set_queue_limits(struct nvme_ctrl *ctrl,
+ 		struct request_queue *q)
+ {
+ 	bool vwc = false;
+@@ -2257,6 +2287,7 @@ static void nvme_set_queue_limits(struct nvme_ctrl *ctrl,
+ 		vwc = true;
+ 	blk_queue_write_cache(q, vwc, vwc);
+ }
++EXPORT_SYMBOL_GPL(nvme_set_queue_limits);
+ 
+ static int nvme_configure_timestamp(struct nvme_ctrl *ctrl)
+ {
+@@ -2944,7 +2975,7 @@ int nvme_init_identify(struct nvme_ctrl *ctrl)
+ 	ret = nvme_configure_apst(ctrl);
+ 	if (ret < 0)
+ 		return ret;
+-	
++
+ 	ret = nvme_configure_timestamp(ctrl);
+ 	if (ret < 0)
+ 		return ret;
+@@ -3169,7 +3200,7 @@ static struct attribute *nvme_ns_id_attrs[] = {
+ 	NULL,
+ };
+ 
+-static umode_t nvme_ns_id_attrs_are_visible(struct kobject *kobj,
++umode_t nvme_ns_id_attrs_are_visible(struct kobject *kobj,
+ 		struct attribute *a, int n)
+ {
+ 	struct device *dev = container_of(kobj, struct device, kobj);
+@@ -3190,7 +3221,7 @@ static umode_t nvme_ns_id_attrs_are_visible(struct kobject *kobj,
+ 	}
+ #ifdef CONFIG_NVME_MULTIPATH
+ 	if (a == &dev_attr_ana_grpid.attr || a == &dev_attr_ana_state.attr) {
+-		if (dev_to_disk(dev)->fops != &nvme_fops) /* per-path attr */
++		if (dev_to_disk(dev)->fops != &nvme_fops)
+ 			return 0;
+ 		if (!nvme_ctrl_use_ana(nvme_get_ns_from_dev(dev)->ctrl))
+ 			return 0;
+@@ -3198,8 +3229,10 @@ static umode_t nvme_ns_id_attrs_are_visible(struct kobject *kobj,
+ #endif
+ 	return a->mode;
+ }
++EXPORT_SYMBOL_GPL(nvme_ns_id_attrs_are_visible);
+ 
+-static const struct attribute_group nvme_ns_id_attr_group = {
++
++const struct attribute_group nvme_ns_id_attr_group = {
+ 	.attrs		= nvme_ns_id_attrs,
+ 	.is_visible	= nvme_ns_id_attrs_are_visible,
+ };
+@@ -3211,6 +3244,7 @@ const struct attribute_group *nvme_ns_id_attr_groups[] = {
+ #endif
+ 	NULL,
+ };
++EXPORT_SYMBOL_GPL(nvme_ns_id_attr_groups);
+ 
+ #define nvme_show_str_function(field)						\
+ static ssize_t  field##_show(struct device *dev,				\
+@@ -3409,6 +3443,69 @@ static int __nvme_check_ids(struct nvme_subsystem *subsys,
+ 	return 0;
+ }
+ 
++/*
++// alter
++static struct treenvme_head *nvme_alloc_treenvme_head(struct nvme_ctrl *ctrl, 
++	unsigned nsid, struct nvme_id_ns *id, 
++	struct nvme_ns_ids *ids)
++{
++	struct treenvme_head *thead;
++	size_t size = sizeof(*thead);
++	int ret = -ENOMEM;
++
++	thead = kzalloc(size, GFP_KERNEL);
++	if (!thead)
++		goto out;
++	thead->subsys = ctrl->subsys;
++	thead->ns_id = nsid;
++	thead->ids = *ids;
++	kref_init(&thead->ref);
++
++	ret = treenvme_alloc_disk(ctrl, thead);
++	if (ret) {
++		dev_err(ctrl->device,
++			"duplicate IDs for nsid %d\n", nsid);
++		goto out_cleanup_srcu;
++	}
++
++	list_add_tail(&thead->entry, &ctrl->subsys->nsheads);
++
++	kref_get(&ctrl->subsys->ref);
++	return thead;
++out_cleanup_srcu:
++	cleanup_srcu_struct(&thead->srcu);
++out_ida_remove:
++	ida_simple_remove(&ctrl->subsys->ns_ida, thead->instance);
++out_free_head:
++	kfree(thead);
++out:
++	if (ret > 0)
++		ret = blk_status_to_errno(nvme_error_status(ret));
++	return ERR_PTR(ret);
++}
++//static int nvme_init_treenvme_head(struct treenvme_ns *tns, unsigned nsid,
++static int nvme_init_treenvme_head(struct nvme_ns *ns, unsigned nsid,
++		struct nvme_id_ns *id)
++{
++	struct nvme_ctrl *ctrl = ns->ctrl;
++	bool is_shared = id->nmic & (1 << 0);
++	struct treenvme_head *thead = NULL;
++	struct nvme_ns_ids ids;
++	int ret = 0;
++
++	mutex_lock(&ctrl->subsys->lock);
++	thead = nvme_alloc_treenvme_head(ctrl, nsid, id, &ids);
++	list_add_tail(&ns->siblings, &thead->list);
++	ns->thead = thead;
++
++out_unlock:
++	mutex_unlock(&ctrl->subsys->lock);
++out:
++	if (ret > 0)
++		ret = blk_status_to_errno(nvme_error_status(ret));
++	return ret;
++}
++*/
+ static struct nvme_ns_head *nvme_alloc_ns_head(struct nvme_ctrl *ctrl,
+ 		unsigned nsid, struct nvme_id_ns *id,
+ 		struct nvme_ns_ids *ids)
+@@ -3561,10 +3658,13 @@ static int nvme_setup_streams_ns(struct nvme_ctrl *ctrl, struct nvme_ns *ns)
+ 	return 0;
+ }
+ 
++// alter
+ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid)
+ {
+ 	struct nvme_ns *ns;
++	struct treenvme_ns *tns;
+ 	struct gendisk *disk;
++	struct gendisk *treedisk;
+ 	struct nvme_id_ns *id;
+ 	char disk_name[DISK_NAME_LEN];
+ 	int node = ctrl->numa_node, flags = GENHD_FL_EXT_DEVT, ret;
+@@ -3587,9 +3687,8 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid)
+ 
+ 	ns->queue->queuedata = ns;
+ 	ns->ctrl = ctrl;
+-
+ 	kref_init(&ns->kref);
+-	ns->lba_shift = 9; /* set to a default value for 512 until disk is validated */
++	ns->lba_shift = 9; 
+ 
+ 	blk_queue_logical_block_size(ns->queue, 1 << ns->lba_shift);
+ 	nvme_set_queue_limits(ctrl, ns->queue);
+@@ -3598,7 +3697,7 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid)
+ 	if (ret)
+ 		goto out_free_queue;
+ 
+-	if (id->ncap == 0)	/* no namespace (legacy quirk) */
++	if (id->ncap == 0)
+ 		goto out_free_id;
+ 
+ 	ret = nvme_init_ns_head(ns, nsid, id);
+@@ -3606,11 +3705,13 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid)
+ 		goto out_free_id;
+ 	nvme_setup_streams_ns(ctrl, ns);
+ 	nvme_set_disk_name(disk_name, ns, ctrl, &flags);
++	//treenvme_set_name(disk_name, ns, ctrl, &flags);
+ 
+ 	disk = alloc_disk_node(0, node);
+ 	if (!disk)
+ 		goto out_unlink_ns;
+ 
++	// alter
+ 	disk->fops = &nvme_fops;
+ 	disk->private_data = ns;
+ 	disk->queue = ns->queue;
+@@ -3628,15 +3729,44 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid)
+ 		}
+ 	}
+ 
+-	down_write(&ctrl->namespaces_rwsem);
+-	list_add_tail(&ns->list, &ctrl->namespaces);
+-	up_write(&ctrl->namespaces_rwsem);
++	nvme_get_ctrl(ctrl);
++	device_add_disk(ctrl->device, ns->disk, nvme_ns_id_attr_groups);
++	nvme_mpath_add_disk(ns, id);
+ 
++#ifdef CONFIG_NVME_TREENVME
++	/*	
++	// alter_tree
++	printk(KERN_ERR "Got into treenvm creation.\n");
++	ns->tqueue = blk_alloc_queue(treenvme_make_request, ctrl->numa_node);
++	ns->tqueue->queuedata = ns;
++	blk_queue_logical_block_size(ns->tqueue, 1 << ns->lba_shift);
++	nvme_set_queue_limits(ctrl, ns->tqueue);
++
++	treenvme_set_name(disk_name, ns, ctrl, &flags);
++	
++	treedisk = alloc_disk_node(0, node);
++	if (!treedisk)
++		goto out_unlink_ns;
++
++	// alter
++	treedisk->fops = &treenvme_fops;
++	treedisk->private_data = ns;
++	treedisk->queue = ns->tqueue;
++	treedisk->flags = flags;
++	memcpy(treedisk->disk_name, disk_name, DISK_NAME_LEN);
++	ns->tdisk = treedisk;
++
++	__nvme_revalidate_disk(treedisk, id);
+ 	nvme_get_ctrl(ctrl);
++	device_add_disk(ctrl->device, ns->tdisk, nvme_ns_id_attr_groups);
++	*/
++	add_treedisk(ctrl, ns, nsid);
++#endif
+ 
+-	device_add_disk(ctrl->device, ns->disk, nvme_ns_id_attr_groups);
++	down_write(&ctrl->namespaces_rwsem);
++	list_add_tail(&ns->list, &ctrl->namespaces);
++	up_write(&ctrl->namespaces_rwsem);
+ 
+-	nvme_mpath_add_disk(ns, id);
+ 	nvme_fault_inject_init(&ns->fault_inject, ns->disk->disk_name);
+ 	kfree(id);
+ 
+diff --git a/drivers/nvme/host/dbin.c b/drivers/nvme/host/dbin.c
+new file mode 100644
+index 000000000000..784c22b113f7
+--- /dev/null
++++ b/drivers/nvme/host/dbin.c
+@@ -0,0 +1,505 @@
++#include "dbin.h"
++#include <linux/string.h>
++#include <linux/kernel.h>
++#include <linux/slab.h>
++
++#ifndef RBUF
++// rbuf methods
++unsigned int _rbuf_int (struct rbuf *r) {
++    //assert(r->ndone+4 <= r->size);
++    uint32_t result = (*(uint32_t*)(r->buf+r->ndone));
++    r->ndone+=4;
++    return result;
++}
++
++inline void _rbuf_literal_bytes (struct rbuf *r, const void **bytes, unsigned int n_bytes) {
++    *bytes =   &r->buf[r->ndone];
++    r->ndone+=n_bytes;
++    //assert(r->ndone<=r->size);
++}
++
++inline void _rbuf_init(struct rbuf *r, unsigned char *buf, unsigned int size) {
++    r->buf = buf;
++    r->size = size;
++    r->ndone = 0;
++}
++
++#endif
++
++#define _cast_voidp(name, val) name = (__typeof__(name))val
++
++void *_mmalloc(int size) {
++	void *p = kmalloc(size, GFP_KERNEL);
++	return p;
++}
++
++#define MMALLOC(v) _cast_voidp(v, _mmalloc(sizeof(*v)))
++#define MMALLOC_N(n,v) _cast_voidp(v, _mmalloc((n)*sizeof(*v)))
++#define _BP_BLOCKNUM(node,i) ((node)->bp[i].blocknum)
++#define _BP_STATE(node,i) ((node)->bp[i].state)
++#define _BP_WORKDONE(node,i) ((node)->bp[i].workdone)
++
++/*
++ *
++ * Functions are defined here
++ */
++struct _dbt *_fill_pivot(_pivot_keys *pk, int i, struct _dbt *a) {
++	a->data = pk->_dbt_keys[i].data;
++	a->size = pk->_dbt_keys[i].size;
++	a->ulen = pk->_dbt_keys[i].ulen;
++	a->flags = pk->_dbt_keys[i].flags;
++	return a;
++}
++
++struct _dbt *_get_pivot(_pivot_keys *pk, int i) {
++	// unless fixed format
++	return &pk->_dbt_keys[i];
++}
++
++static long
++ftnode_memory_size_cutdown(struct _ftnode *node)
++// Effect: Estimate how much main memory a node requires.
++{
++    long retval = 0;
++    int n_children = node->n_children;
++    retval += sizeof(*node);
++    retval += (n_children)*(sizeof(node->bp[0]));
++    retval += node->pivotkeys._total_size;
++	
++    int i = 0;
++    for (i = 0; i < n_children; i++) {
++    	//struct _sub_block *sb = BSB(node, i);
++    	struct _sub_block *sb = node->bp[i].ptr.u.subblock;
++    	retval += sizeof(*sb);
++    	retval += sb->compressed_size;
++    }
++    /*
++    // now calculate the sizes of the partitions
++    for (int i = 0; i < n_children; i++) {
++        if (BP_STATE(node,i) == PT_INVALID || BP_STATE(node,i) == PT_ON_DISK) {
++            continue;
++        }
++        else if (BP_STATE(node,i) == PT_COMPRESSED) {
++            struct _sub_block *sb = BSB(node, i);
++            retval += sizeof(*sb);
++            retval += sb->compressed_size;
++        }
++        else if (BP_STATE(node,i) == PT_AVAIL) {
++            if (node->height > 0) {
++                retval += get_avail_internal_node_partition_size(node, i);
++            }
++            else {
++                BASEMENTNODE bn = BLB(node, i);
++                retval += sizeof(*bn);
++                retval += BLB_DATA(node, i)->get_memory_size();
++            }
++        }
++        else {
++            abort();
++        }
++    }
++    */
++    return retval;
++}
++
++long ftnode_cachepressure_size_cutdown(struct _ftnode *node) {
++    long retval = 0;
++    bool totally_empty = true;
++    int i = 0;
++    if (node->height == 0) {
++        goto exit;
++    }
++    else {
++        for (i = 0; i < node->n_children; i++) {
++    		struct _sub_block *sb = node->bp[i].ptr.u.subblock;
++                totally_empty = false;
++                retval += sb->compressed_size;
++        }
++    }
++exit:
++    if (totally_empty) {
++        return 0;
++    }
++    return retval;
++}
++
++_PAIR_ATTR make_ftnode_pair_attr_cutdown(struct _ftnode *node) {
++    long size = ftnode_memory_size_cutdown(node);
++    long cachepressure_size = ftnode_cachepressure_size_cutdown(node);
++    _PAIR_ATTR result={
++        .size = size,
++        .nonleaf_size = (node->height > 0) ? size : 0,
++        .leaf_size = (node->height > 0) ? 0 : size,
++        .rollback_size = 0,
++        .cache_pressure_size = cachepressure_size,
++        .is_valid = true
++    };
++    return result;
++}
++
++struct _dbt *_init_dbt(struct _dbt *dbt)
++{
++	memset(dbt, 0, sizeof(*dbt));
++	return dbt;
++}
++
++/*
++static inline struct _ftnode_nonleaf_childinfo _BNC(struct _ftnode* node, int i) {
++	struct _ftnode_child_pointer fcptr = node->bp[i].ptr;
++	return *fcptr.u.nonleaf; 
++}
++*/
++
++static int ft_compare_pivot_cutdown(const struct _comparator *cmp, struct _dbt *key, struct _dbt *pivot) {
++    return cmp->_cmp(key, pivot);
++}
++
++int toku_ftnode_which_child_cutdown(struct _ftnode *node, struct _dbt *k, struct _comparator *cmp);
++
++int ftnode_which_child_cutdown(struct _ftnode *node, struct _dbt *k, struct _comparator *_cmp) {
++    // a funny case of no pivots
++    struct _comparator cmp;
++    init_comparator(&cmp); 
++    if (node->n_children <= 1) return 0;
++
++    struct _dbt pivot;
++
++    // check the last key to optimize seq insertions
++    int n = node->n_children-1;
++    int c = ft_compare_pivot_cutdown(&cmp, k, _fill_pivot(&node->pivotkeys, n - 1, &pivot));
++    if (c > 0) return n;
++
++    // binary search the pivots
++    int lo = 0;
++    int hi = n-1; // skip the last one, we checked it above
++    int mi;
++    while (lo < hi) {
++        mi = (lo + hi) / 2;
++        c = ft_compare_pivot_cutdown(&cmp, k, _fill_pivot(&node->pivotkeys, mi, &pivot));
++        if (c > 0) {
++            lo = mi+1;
++            continue;
++        }
++        if (c < 0) {
++            hi = mi;
++            continue;
++        }
++        return mi;
++    }
++    return lo;
++}
++
++int read_compressed_sub_block_cutdown(struct rbuf *rb, struct _sub_block *sb)
++{
++	int r = 0;
++	sb->compressed_size = _rbuf_int(rb);
++	sb->uncompressed_size = _rbuf_int(rb);
++	const void **cp = (const void **) &sb->compressed_ptr;
++	_rbuf_literal_bytes(rb, cp, sb->compressed_size);
++	sb->xsum = _rbuf_int(rb);
++	
++	// decompress; only no compression
++	sb->uncompressed_ptr = _mmalloc(sb->uncompressed_size);
++	memcpy(sb->uncompressed_ptr, sb->compressed_ptr + 1, sb->compressed_size -1);
++
++	return r;
++}
++
++/*
++int
++read_compressed_sub_block_cutdown(struct rbuf *rb, struct _sub_block *sb)
++{
++    int r = 0;
++    sb->compressed_size = _rbuf_int(rb);
++    sb->uncompressed_size = _rbuf_int(rb);
++    const void **cp = (const void **) &sb->compressed_ptr;
++    _rbuf_literal_bytes(rb, cp, sb->compressed_size);
++    sb->xsum = _rbuf_int(rb);
++    return r;
++}
++*/
++
++int read_and_decompress_sub_block_cutdown(struct rbuf *rb, struct _sub_block *sb)
++{
++    int r = 0;
++    r = read_compressed_sub_block_cutdown(rb, sb);
++    if (r != 0) {
++        goto exit;
++    }
++exit:
++    return r;
++}
++
++void just_decompress_sub_block_cutdown(struct _sub_block *sb)
++{
++    // <CER> TODO: Add assert that the subblock was read in.
++    sb->uncompressed_ptr = _mmalloc(sb->uncompressed_size);
++
++    decompress_cutdown(
++        (_Bytef *) sb->uncompressed_ptr,
++        sb->uncompressed_size,
++        (_Bytef *) sb->compressed_ptr,
++        sb->compressed_size
++        );
++}
++
++void decompress_cutdown (_Bytef       *dest,   _uLongf destLen,
++                      const _Bytef *source, _uLongf sourceLen)
++{
++    //assert(sourceLen>=1);
++    memcpy(dest, source + 1, sourceLen - 1);
++    return;
++}
++/*
++struct _dbt *_get_pivot(_pivot_keys *pk, int a) {
++	return pk->_dbt_keys[a];
++}
++*/
++
++void _create_empty_pivot(_pivot_keys *pk) {
++	pk = (__typeof__(pk))_mmalloc(sizeof(_pivot_keys));
++	pk->_num_pivots = 0;
++	pk->_total_size = 0;
++	pk->_fixed_keys = NULL;
++	pk->_fixed_keylen = 0;
++	pk->_fixed_keylen_aligned = 0;
++	pk->_dbt_keys = NULL;
++}
++
++void deserialize_from_rbuf_cutdown(_pivot_keys *pk, struct rbuf *rb, int n) {
++	int i = 0;
++	pk->_num_pivots = n;
++	pk->_total_size = 0;
++	pk->_fixed_keys = NULL;
++	pk->_fixed_keylen = 0;
++	pk->_dbt_keys = NULL;
++
++	pk->_dbt_keys = (__typeof__(pk->_dbt_keys))_mmalloc(64 * n);
++	for (i = 0; i < n; i++) {
++		const void *pivotkeyptr;
++		uint32_t size;
++		size = _rbuf_int(rb);
++		_rbuf_literal_bytes(rb, &pivotkeyptr, size);
++		memcpy(&pk->_dbt_keys[i], pivotkeyptr, size);
++		pk->_total_size += size;
++	}
++}
++
++void dump_ftnode_cutdown(struct _ftnode *nd) {
++	printk("============DUMPINGFTNODE=============\n");
++	printk("Max msn of node %d\n", nd->max_msn_applied_to_node_on_disk.msn);
++	printk("Flags: %u\n", nd->flags);
++	printk("Blocknum: %u\n", nd->blocknum.b);
++	printk("Layout version: %u\n", nd->layout_version);
++	printk("Layout version original: %u\n", nd->layout_version_original);
++	printk("Layout version read from disk: %u\n", nd->layout_version_read_from_disk);
++	printk("Build ID: %u\n", nd->build_id);
++	printk("Height: %u\n", nd->height);
++	printk("Dirty: %u\n", nd->dirty_);
++	printk("Fullhash: %u\n", nd->fullhash);
++	printk("Number of children: %u\n", nd->n_children);
++	printk("Pivot keys total size of: %u\n", nd->pivotkeys._total_size);
++	printk("Oldest reference xid known: %u\n", nd->oldest_referenced_xid_known);
++	printk("Ftnode partition of: %u\n", nd->bp->blocknum.b);
++	if (nd->ct_pair) {
++		printk("Ctpair count is: %u\n", nd->ct_pair->key.b);
++		printk("Cache fd: %u\n", nd->ct_pair->count);
++	}
++	else {
++		printk("Null ctpair.\n");
++	}
++	if (nd->bp)
++		dump_ftnode_partition(nd->bp);
++	printk("================DUMPED================\n");
++}
++
++void dump_ftnode_partition(struct _ftnode_partition *bp) {
++	printk("===========DUMPINGFTNODEPARTITION========\n");
++	printk("Blocknum is %u\n", bp->blocknum.b);
++	printk("Workdone is %u\n", bp->workdone);
++	printk("State is %u\n", bp->state);
++	//dump_ftnode_child_ptr_cutdown(&bp->ptr);
++	printk("==================DUMPED==================\n");
++}
++
++void dump_sub_block(struct _sub_block *sb) {
++	int i = 0;
++	printk("=============DUMPINGSUBBLOCK==============\n");
++	for (i = 0; i < sb->uncompressed_size; i++) {
++		printk(KERN_CONT "%c", ((char *)(sb->uncompressed_ptr))[i]);
++	}		
++	printk("==========DUMPED=SUB=BLOCK================\n");	
++}
++
++void dump_ftnode_child_ptr_cutdown(_FTNODE_CHILD_POINTER *fcp) {
++	printk("===========DUMPINGFTNODECHILDPTR========\n");
++	printk("Subblock is at: %c\n", fcp->u.subblock->uncompressed_ptr);
++	printk("Subblock unc size is: %u\n", fcp->u.subblock->uncompressed_size);
++	printk("Compressed sz is at: %u\n", fcp->u.subblock->compressed_size);
++	if (fcp->tag)
++		printk("Child tag is: %u\n", fcp->tag);
++	printk("================DUMPED===================\n");
++}
++
++int leftmost_child_wanted (struct ftnode_fetch_extra *ffe, struct _ftnode *node) {
++	if (ffe->left_is_neg_infty) {
++		return 0;
++	}
++	else if (ffe->range_lock_left_key.data == NULL) {
++		return -1;
++	}
++	else {
++		return ftnode_which_child_cutdown(node, &ffe->range_lock_left_key, NULL);
++	}
++}
++
++int rightmost_child_wanted (struct ftnode_fetch_extra *ffe, struct _ftnode *node) {
++	if (ffe->right_is_pos_infty) {
++		return node->n_children - 1;
++	}
++	else if (ffe->range_lock_right_key.data == NULL) {
++		return -1;
++	}
++	else {
++		return ftnode_which_child_cutdown(node, &ffe->range_lock_right_key, NULL);
++	}
++}
++
++int long_key_cmp(struct _dbt *a, struct _dbt *b);
++
++inline void init_comparator(struct _comparator *cmp) {
++	cmp->_cmp = &long_key_cmp;
++	cmp->_memcpy_magic = 8;
++}
++
++inline struct _sub_block *BSB(struct _ftnode *node, int i) {
++	struct _ftnode_child_pointer p = node->bp[i].ptr;
++	return p.u.subblock;	
++}
++
++inline void set_BSB(struct _ftnode *node, int i, struct _sub_block *sb) {
++	struct _ftnode_child_pointer *p = &node->bp[i].ptr;
++	p->tag = _BCT_SUBBLOCK;
++	p->u.subblock = sb; 
++}
++
++// Comparators
++int long_key_cmp(struct _dbt *a, struct _dbt *b) {
++	const long *_cast_voidp(x, a->data);
++	const long *_cast_voidp(y, b->data);
++	return (*x > *y) - (*x < *y);	
++}
++
++int _ft_compare(const struct _ft_search *a, const struct _dbt *b) {
++	struct _comparator cmp;
++	init_comparator(&cmp);
++	return cmp._cmp(a->k, b) <= 0; 
++}
++
++void init_ft_search(struct _ft_search *a) {
++	a->compare = _ft_compare;
++	a->direction = _FT_SEARCH_RIGHT;
++	_init_dbt(a->k);
++	_init_dbt(&a->pivot_bound);
++	_init_dbt(a->k_bound);	
++}
++
++int _search_which_child(struct _comparator *cmp, struct _ftnode *node, struct _ft_search *search) {
++        struct _dbt a;
++        _init_dbt(&a);
++
++        int lo = 0;
++        int hi = node->n_children - 1;
++        int mi;
++        while (lo < hi) {
++                mi = (lo + hi) / 2;
++                _fill_pivot(&node->pivotkeys, mi, &a);
++                bool c = search->compare(search, &a);
++                if (((search->direction == _FT_SEARCH_LEFT) && c) ||
++                        ((search->direction == _FT_SEARCH_RIGHT) && !c)) {
++                        hi = mi;
++                }
++                else {
++                        lo = mi + 1;
++                }
++        }
++
++        // ready to return something
++        // https://github.com/percona/PerconaFT/blob/d627ac564ae11944a363e18749c9eb8291b8c0ac/ft/ft-ops.cc#L3674
++
++        /*
++        if (search->pivot_bound.data != nullptr) {
++                if (search->direction == FT_SEARCH_LEFT) {
++                        while (lo < node->n_children - 1 && search_which_child_cmp_with_bound(cmp, node, lo, search, &pivotkey) <= 0) {
++                                lo++;
++                        }
++                }
++                else {
++                        while (lo > 0 && search_which_child_cmp_with_bound(cmp, node, lo - 1, search, &pivotkey) >= 0) {
++                                lo--;
++                        }
++                }
++        }
++        */
++        return lo;
++}
++
++
++/*
++inline struct _sub_block *BSB(struct _ftnode *node, int i) {
++	struct _ftnode_child_pointer *p = &node->bp[i].ptr;
++	return p.u.subblock;
++}
++
++inline void set_BSB(struct _ftnode *node, int i, struct _sub_block *sb) {
++	struct _ftnode_child_pointer *p = &node->bp[i].ptr;
++	p->tag = _BCT_SUBBLOCK;
++	p->u.subblock = sb;
++}
++*/
++
++void init_ffe(struct ftnode_fetch_extra *fe) {
++	fe->ft = 4;
++	fe->type = ftnode_fetch_none;
++	fe->search = NULL;
++	_init_dbt(&fe->range_lock_left_key);
++	_init_dbt(&fe->range_lock_right_key);
++	fe->left_is_neg_infty = false;
++	fe->right_is_pos_infty = false;
++	fe->child_to_read = -1;
++	fe->disable_prefetching = true;
++	fe->read_all_partitions = false;
++	fe->bytes_read = 0;
++	fe->io_time = 0;
++	fe->deserialize_time = 0;
++	fe->decompress_time = 0;
++}
++
++void sub_block_init_cutdown(struct _sub_block *sb) {
++        sb->uncompressed_ptr = 0;
++        sb->uncompressed_size = 0;
++        sb->compressed_ptr = 0;
++        sb->compressed_size_bound = 0;
++	sb->compressed_size = 0;
++	sb->xsum = 0;
++}
++
++inline unsigned long long _rbuf_ulonglong(struct rbuf *r) {
++	unsigned i0 = _rbuf_int(r);
++	unsigned i1 = _rbuf_int(r);
++	return ((unsigned long long)(i0) << 32) | ((unsigned long long)(i1));
++}
++
++inline _MSN _rbuf_MSN(struct rbuf *rb) {
++	_MSN msn = { .msn = _rbuf_ulonglong(rb) };
++	return msn;
++}
++
++inline void _rbuf_TXNID(struct rbuf *rb, _TXNID *txnid) {
++	*txnid = _rbuf_ulonglong(rb);
++}
++
++inline _BLOCKNUM _rbuf_blocknum(struct rbuf *rb) {
++	_BLOCKNUM result = { .b = _rbuf_ulonglong(rb) };
++	return result;
++}
+diff --git a/drivers/nvme/host/dbin.h b/drivers/nvme/host/dbin.h
+new file mode 100644
+index 000000000000..dba25fdefff1
+--- /dev/null
++++ b/drivers/nvme/host/dbin.h
+@@ -0,0 +1,609 @@
++#ifndef DBIN_H
++#define DBIN_H
++
++//#include <stdint.h>
++//#include <cstddef>
++//#include <stdio.h>
++//#include <cstring>
++#include <linux/string.h>
++#include <linux/types.h>
++#include <linux/ctype.h>
++
++//#include <pthread.h>
++//#define printk printf
++
++// node stuff
++// preliminaries for node
++typedef struct _msn { uint64_t msn; } _MSN;
++typedef struct _blocknum_s { int64_t b; } _BLOCKNUM;
++typedef uint64_t _TXNID;
++typedef _BLOCKNUM _CACHEKEY;
++struct _ftnode_partition;
++struct _dbt;
++struct __db_dbt;
++struct __toku_dbt;
++typedef struct __toku_dbt DBT;
++struct _dbt{
++	void *data;
++	uint32_t size;
++	uint32_t ulen;
++	uint32_t flags;
++};
++struct cachefile;
++typedef struct cachefile *CACHEFILE;
++struct __toku_db;
++typedef struct __toku_db DB;
++struct ctpair;
++
++#define RBUFDEF 1
++struct rbuf {
++    unsigned char *buf;
++    unsigned int  size;
++    unsigned int  ndone;
++};
++#define RBUF_INITIALIZER ((struct rbuf){.buf = NULL, .size=0, .ndone=0})
++// pivot_keys
++typedef struct _int_pivot_keys {
++	char *_fixed_keys;
++	size_t _fixed_keylen;
++	size_t _fixed_keylen_aligned;
++	struct _dbt *_dbt_keys;
++	int _num_pivots;
++	size_t _total_size;
++} _pivot_keys;
++
++struct _ftnode {
++    _MSN max_msn_applied_to_node_on_disk;
++    unsigned int flags;
++    _BLOCKNUM blocknum;
++    int layout_version;
++    int layout_version_original;
++    int layout_version_read_from_disk;
++    uint32_t build_id;
++    int height;
++    int dirty_;
++    uint32_t fullhash;
++/*
++    void set_dirty() {
++        dirty_ = 1;
++    }
++    void clear_dirty() {
++        dirty_ = 0;
++    }
++    bool dirty() {
++        return dirty_;
++    }
++*/
++    int n_children;
++    _pivot_keys pivotkeys;
++    _TXNID oldest_referenced_xid_known;
++
++    struct _ftnode_partition *bp;
++    struct _ctpair *ct_pair;
++};
++typedef char _Bytef;
++typedef unsigned long int _uLongf;
++
++void *_mmalloc(int size);
++
++#define _cast_voidp(name, val) name = (__typeof__(name))val
++#define MMALLOC(v) _cast_voidp(v, _mmalloc(sizeof(*v)))
++#define MMALLOC_N(n,v) _cast_voidp(v, _mmalloc((n)*sizeof(*v)))
++#define _BP_BLOCKNUM(node,i) ((node)->bp[i].blocknum)
++#define _BP_STATE(node,i) ((node)->bp[i].state)
++#define _BP_WORKDONE(node,i) ((node)->bp[i].workdone)
++struct _sub_block {
++	void *uncompressed_ptr;
++	uint32_t uncompressed_size;
++	void *compressed_ptr;
++	uint32_t compressed_size;
++	uint32_t compressed_size_bound;
++	uint32_t xsum;
++};
++void sub_block_init_cutdown(struct _sub_block *sb);
++//int _read_compressed_sub_block(struct rbuf *rb, struct _sub_block *sb);
++int deserialize_ftnode_info_cutdown(struct _sub_block *sb, struct _ftnode *ftnode);
++struct _sbt;
++struct _dbt *_init_dbt(struct _dbt *dbt);
++struct _comparator;
++
++// PAIR STUFF
++struct _klpair_struct {
++	uint32_t le_offset;
++	uint8_t key[0];
++};
++
++enum _pt_state {
++	_PT_INVALID = 0,
++	_PT_ON_DISK = 1,
++	_PT_COMPRESSED = 2,
++	_PT_AVAIL = 3
++};
++
++struct ftnode_leaf_basement_node;
++
++/*
++struct _ftnode_leaf_basement_node {
++	bn_data data_buffer;
++};
++*/
++
++enum _ftnode_child_tag {
++	_BCT_INVALID = 0,
++	_BCT_NULL,
++	_BCT_SUBBLOCK,
++	_BCT_LEAF,
++	_BCT_NONLEAF
++};
++
++typedef struct _ftnode_child_pointer {
++	union {
++		struct _sub_block *subblock;
++		struct ftnode_nonleaf_childinfo *nonleaf;
++		struct ftnode_leaf_basement_node *leaf;
++	} u;
++	enum _ftnode_child_tag tag;
++} _FTNODE_CHILD_POINTER;
++
++struct _ftnode_partition {
++    _BLOCKNUM     blocknum; // blocknum of child 
++    uint64_t     workdone;
++    struct _ftnode_child_pointer ptr;
++    enum _pt_state state; // make this an enum to make debugging easier.  
++    uint8_t clock_count;
++};
++
++struct _ancestors {
++	struct _ftnode *node;
++	int childnum;
++	struct _ancestors *next;
++};
++
++typedef struct _pair_attr_s {
++	long size;
++	long nonleaf_size;
++	long leaf_size;
++	long rollback_size;
++	long cache_pressure_size;
++	bool is_valid;
++} _PAIR_ATTR;
++
++// search structs
++enum _ft_search_direction_e {
++	_FT_SEARCH_LEFT = 1,
++	_FT_SEARCH_RIGHT = 2,
++};
++struct _ft_search;
++
++typedef int (*_ft_search_compare_func_t)(const struct _ft_search *a, const struct _dbt *b);
++
++struct _ft_search {
++	_ft_search_compare_func_t compare;
++	enum _ft_search_direction_e direction;
++	const struct _dbt *k;
++	void *context;
++	struct _dbt pivot_bound;
++	const struct _dbt *k_bound;
++};
++
++/*
++ * Function declarations begin here:
++ */
++struct _dbt *_fill_pivot(_pivot_keys* pk, int a, struct _dbt* k);
++long int ftnode_cachepressure_size_cutdown(struct _ftnode* ftn);
++_PAIR_ATTR make_ftnode_pair_cutdown(struct _ftnode* ftn);
++void _convert_dbt_to_tokudbt(DBT *keya, struct _dbt* keyb);
++void _convert_tokudbt_to_dbt(struct _dbt* keya, DBT *keyb);
++_PAIR_ATTR make_ftnode_pair_attr_cutdown(struct _ftnode *node);
++uint32_t toku_cachetable_hash_cutdown(CACHEFILE cf, _BLOCKNUM bn);
++struct _dbt *_get_pivot(_pivot_keys *pk, int a);
++void _create_empty_pivot(_pivot_keys *pk);
++void deserialize_from_rbuf_cutdown(_pivot_keys *pk, struct rbuf *rb, int n);
++
++typedef int (*_compare_func)(struct _dbt *a, struct _dbt *b); 
++typedef int (*_old_compare_func)(DB *db, const DBT *a, const DBT *b);
++struct _comparator{
++	_compare_func _cmp;
++	uint8_t _memcpy_magic;
++};
++
++inline void init_comparator (struct _comparator *cmp); 
++
++/*void _convert_dbt_to_tokudbt(DBT *a, struct _dbt *b) {
++	a->data = b->data;
++	a->size = b->size;
++	a->ulen= b->ulen;
++	a->flags = b->flags;
++}
++
++void _convert_tokudbt_to_dbt(struct _dbt *a, DBT *b) {
++	a->data = b->data;
++	a->size = b->size;
++	a->ulen = b->ulen;
++	a->flags = b->flags;
++}
++*/
++
++typedef uint64_t _TXNID;
++struct __attribute__((__packed__)) _XIDS_S {
++	uint8_t num_xids;
++	_TXNID ids[];
++};
++typedef struct _XIDS_S *_XIDS;
++
++struct _message_buffer {
++	struct __attribute__((__packed__)) buffer_entry {
++		unsigned int keylen;
++		unsigned int vallen;
++		unsigned char type;
++		bool is_fresh;
++		_MSN msn;
++		
++	};
++	int _num_entries;
++	char* memory;
++	int _memory_size;
++	int _memory_used;
++	size_t memory_usable;
++};
++
++/*
++struct __attribute__((__packed__)) buffer_entry {
++	unsigned int keylen;
++	unsigned int vallen;
++	unsigned char type;
++	bool is_fresh;
++	_MSN msn;	 
++};
++*/
++/*
++typedef omtdata_t;
++
++struct _omt_integer {
++	struct _omt_array {
++		uint32_t start_idx;
++		uint32_t num_values;
++		_omtdata_t *values;
++	};
++
++	struct _omt_tree {
++		_subtree root;
++		uint32_t free_idx;
++		_omt_node *nodes;	
++	};
++
++	bool is_array;
++	uint32_t capacity;
++	union {
++		struct _omt_array a;
++		struct _omt_tree b;
++	};
++}
++
++struct message_buffer;
++namespace toku {
++	template<typename omtdata_t,
++        typename omtdataout_t=omtdata_t,
++        bool supports_marks=false>
++	class omt;
++};
++//class toku::omt;
++typedef toku::omt<int32_t> off_omt_t;
++typedef toku::omt<int32_t, int32_t, true> marked_off_omt_t;
++
++struct _ftnode_nonleaf_childinfo {
++	struct message_buffer msg_buffer;
++	// all these are broken
++	off_omt_t broadcast_list;
++	marked_off_omt_t fresh_message_tree;
++	off_omt_t stale_message_tree;
++	uint64_t flow[2];
++};
++*/
++
++// compression declarations 
++int read_compressed_sub_block_cutdown(struct rbuf *rb, struct _sub_block *sb);
++int read_and_decompress_sub_block_cutdown(struct rbuf *rb, struct _sub_block *sb);
++void just_decompress_sub_block_cutdown(struct _sub_block *sb);
++void decompress_cutdown (_Bytef *dest, _uLongf destLen, const _Bytef *source, _uLongf sourceLen);
++void dump_ftnode_cutdown(struct _ftnode *nd);
++void dump_ftnode_child_ptr_cutdown(_FTNODE_CHILD_POINTER *fcp);
++void dump_ftnode_partition(struct _ftnode_partition *bp);
++void dump_sub_block(struct _sub_block *sb);
++
++struct _ctpair;
++typedef struct _cachetable *_CACHETABLE;
++typedef struct _cachefile *_CACHEFILE;
++typedef struct _ctpair *_PAIR;
++
++struct _FILENUM { 
++	uint32_t fileid;
++};
++
++struct _psi_mutex {};
++
++struct _mutex_t {
++	//A pthread_mutex_t pmutex;
++	struct mutex *pm;
++	//A struct _psi_mutex *psi_mutex;
++	struct mutex *psi_mutex;
++};
++
++// This is broken
++struct _cond_t {	
++	int pcond;
++	//pthread_cond_t pcond;
++};
++
++struct _mutex_aligned {
++	struct _mutex_t aligned_mutex __attribute__((__aligned__(64)));
++};
++
++//#include <sys/stat.h>
++struct _fileid {
++	dev_t st_dev;
++	ino_t st_ino;	
++};
++
++typedef struct background_job_manager_struct {
++	bool accepting_jobs;
++	uint32_t num_jobs;
++	//_cond_t jobs_wait;
++	int jobs_wait;
++	struct _mutex_t jobs_lock;
++} _BACKGROUND_JOB_MANAGER;
++
++typedef _BLOCKNUM _CACHEKEY;
++typedef struct __lsn { uint64_t lsn; } _LSN;
++struct cachetable;
++typedef struct cachetable *CACHETABLE;
++struct _evictor;
++
++struct _cachefile {
++    _PAIR cf_head;
++    uint32_t num_pairs;
++    bool for_checkpoint;
++    bool unlink_on_close;
++    bool skip_log_recover_on_close;
++    int fd;
++    CACHETABLE cachetable;
++    struct _fileid fileid;
++    struct _FILENUM filenum;
++    uint32_t hash_id;
++    char *fname_in_env;
++
++    void *userdata;
++    void (*log_fassociate_during_checkpoint)(CACHEFILE cf, void *userdata); 
++    void (*close_userdata)(CACHEFILE cf, int fd, void *userdata, bool lsnvalid, _LSN);
++    void (*free_userdata)(CACHEFILE cf, void *userdata);
++    void (*begin_checkpoint_userdata)(_LSN lsn_of_checkpoint, void *userdata);
++    void (*checkpoint_userdata)(CACHEFILE cf, int fd, void *userdata);
++    void (*end_checkpoint_userdata)(CACHEFILE cf, int fd, void *userdata);
++    void (*note_pin_by_checkpoint)(CACHEFILE cf, void *userdata);
++    void (*note_unpin_by_checkpoint)(CACHEFILE cf, void *userdata);
++    _BACKGROUND_JOB_MANAGER bjm;
++};
++
++// definitions of all the callbacks
++
++enum _cachetable_dirty {
++	_CACHETABLE_CLEAN = 0,
++	_CACHETABLE_DIRTY = 1,
++};
++
++enum _context_id {
++	_CTX_INVALID = -1,
++	_CTX_DEFAULT = 0,
++	_CTX_SEARCH,
++	_CTX_PROMO,
++	_CTX_FULL_FETCH,
++	_CTX_PARTIAL_FETCH,
++	_CTX_FULL_EVICTION,
++	_CTX_PARTIAL_EVICTION,
++	_CTX_MESSAGE_INJECTION,
++	_CTX_MESSAGE_APPLICATION,
++	_CTX_FLUSH,
++	_CTX_CLEANER
++};
++
++struct _frwlock {
++	struct queue_item {
++		struct _cond_t *cond;
++		struct queue_item *next;
++	};
++	struct _mutex_t *m_mutex;
++	uint32_t m_num_readers;
++	uint32_t m_num_writers;
++	uint32_t m_num_want_write;
++	uint32_t m_num_want_read;
++	uint32_t m_num_signaled_readers;
++	uint32_t m_num_expensive_want_write;
++	bool m_current_writer_expensive;
++	bool m_read_wait_experience;
++	int m_current_writer_tid;
++	enum _context_id m_blocking_writer_context_id;
++	struct queue_item m_queue_item_read;
++	bool m_wait_read_is_in_queue;
++	struct _cond_t m_wait_read;
++	struct queue_item *m_wait_head;
++	struct queue_item *m_wait_tail;
++};
++
++enum _partial_eviction_cost {
++	_PE_CHEAP = 0,
++	_PE_EXPENSIVE = 1,
++};
++
++// Definition of all the callbacks
++typedef void (*_CACHETABLE_FLUSH_CALLBACK)(CACHEFILE, int fd, _CACHEKEY key, void *value, void **disk_data, void *write_extraargs, _PAIR_ATTR size, _PAIR_ATTR* new_size, bool write_me, bool keep_me, bool for_checkpoint, bool is_clone);
++
++typedef int (*_CACHETABLE_FETCH_CALLBACK)(CACHEFILE, _PAIR p, int fd, _CACHEKEY key, uint32_t fullhash, void **value_data, void **disk_data, _PAIR_ATTR *sizep, int *dirtyp, void *read_extraargs);
++
++typedef void (*_CACHETABLE_PARTIAL_EVICTION_EST_CALLBACK)(void *ftnode_pv, void* disk_data, long* bytes_freed_estimate, enum _partial_eviction_cost *cost, void *write_extraargs);
++
++typedef int (*_CACHETABLE_PARTIAL_EVICTION_CALLBACK)(void *ftnode_pv, _PAIR_ATTR old_attr, void *write_extraargs, void (*finalize)(_PAIR_ATTR new_attr, void *extra), void *finalize_extra);
++
++typedef bool (*_CACHETABLE_PARTIAL_FETCH_REQUIRED_CALLBACK)(void *ftnode_pv, void *read_extraargs);
++
++typedef int (*_CACHETABLE_PARTIAL_FETCH_CALLBACK)(void *value_data, void* disk_data, void *read_extraargs, int fd, _PAIR_ATTR *sizep);
++
++typedef void (*_CACHETABLE_PUT_CALLBACK)(_CACHEKEY key, void *value_data, _PAIR p);
++
++typedef int (*_CACHETABLE_CLEANER_CALLBACK)(void *ftnode_pv, _BLOCKNUM blocknum, uint32_t fullhash, void *write_extraargs);
++
++typedef void (*_CACHETABLE_CLONE_CALLBACK)(void* value_data, void** cloned_value_data, long* clone_size, _PAIR_ATTR* new_attr, bool for_checkpoint, void* write_extraargs);
++
++typedef void (*_CACHETABLE_CHECKPOINT_COMPLETE_CALLBACK)(void *value_data);
++
++typedef struct {
++	_CACHETABLE_FLUSH_CALLBACK flush_callback;
++	_CACHETABLE_PARTIAL_EVICTION_EST_CALLBACK pe_est_callback;
++	_CACHETABLE_PARTIAL_EVICTION_CALLBACK pe_callback;
++	_CACHETABLE_CLEANER_CALLBACK cleaner_callback;
++	_CACHETABLE_CLONE_CALLBACK clone_callback;
++	_CACHETABLE_CHECKPOINT_COMPLETE_CALLBACK checkpoint_complete_callback;
++	void *write_extraargs;
++} _CACHETABLE_WRITE_CALLBACK;
++
++struct _pthread_rwlock_t {
++	int rwlock;
++	//pthread_rwlock_t rwlock;
++};
++
++typedef struct _pair_list_cutdown {
++	uint32_t m_n_in_table;
++	uint32_t m_table_size;
++	uint32_t m_num_locks;
++	_PAIR *m_table;
++	struct _mutex_aligned *m_mutexes;
++	_PAIR m_clock_head;
++	_PAIR m_cleaner_head;
++	_PAIR m_checkpoint_head;
++	_PAIR m_pending_head;
++
++	struct _pthread_rwlock_t m_list_lock;
++	struct _pthread_rwlock_t m_pending_lock_expensive;
++	struct _pthread_rwlock_t m_pending_lock_cheap;	
++} _pair_list;
++
++struct _st_rwlock {
++	int reader;
++	int want_read;
++	struct _cond_t wait_read;
++	int writer;
++	int want_write;
++	struct _cond_t wait_write;
++	struct _cond_t *wait_users_go_to_zero; 
++};
++
++struct _nb_mutex {
++	struct _st_rwlock lock;
++};
++
++struct _ctpair {
++    CACHEFILE cachefile;
++    _CACHEKEY key;
++    uint32_t fullhash;
++    _CACHETABLE_FLUSH_CALLBACK flush_callback;
++    _CACHETABLE_PARTIAL_EVICTION_EST_CALLBACK pe_est_callback;
++    _CACHETABLE_PARTIAL_EVICTION_CALLBACK pe_callback;
++    _CACHETABLE_CLEANER_CALLBACK cleaner_callback;
++    _CACHETABLE_CLONE_CALLBACK clone_callback;
++    _CACHETABLE_CHECKPOINT_COMPLETE_CALLBACK checkpoint_complete_callback;
++    void *write_extraargs;
++    void* cloned_value_data;
++    long cloned_value_size;
++    void* disk_data;
++    void* value_data;
++    _PAIR_ATTR attr;
++    enum _cachetable_dirty dirty;
++    uint32_t count;
++    uint32_t refcount;
++    uint32_t num_waiting_on_refs;
++    struct _cond_t refcount_wait;
++    struct _frwlock value_rwlock;
++    struct _nb_mutex disk_nb_mutex;
++    struct _mutex_t* mutex;
++    bool checkpoint_pending;
++    long size_evicting_estimate;
++    struct _evictor* ev;
++    _pair_list* list_;
++    _PAIR clock_next, clock_prev;
++    _PAIR hash_chain;
++    _PAIR pending_next;
++    _PAIR pending_prev;
++    _PAIR cf_next;
++    _PAIR cf_prev;
++};
++
++inline void _rbuf_init(struct rbuf *r, unsigned char *buf, unsigned int size);
++unsigned int _rbuf_int (struct rbuf *r);
++inline void _rbuf_literal_bytes(struct rbuf *r, const void **bytes, unsigned int n_bytes);
++inline unsigned long long _rbuf_ulonglong(struct rbuf *r);
++inline _MSN _rbuf_MSN(struct rbuf *r);
++inline void _rbuf_TXNID(struct rbuf *r, _TXNID *txnid);
++inline _BLOCKNUM _rbuf_blocknum(struct rbuf *rb);
++
++#define BP_START(node_dd,i) ((node_dd)[i].start)
++#define BP_SIZE(node_dd,i) ((node_dd)[i].size)
++#define BP_BLOCKNUM(node,i) ((node)->bp[i].blocknum)
++#define _BP_BLOCKNUM(node,i) ((node)->bp[i].blocknum)
++#define BP_STATE(node,i) ((node)->bp[i].state)
++#define BP_WORKDONE(node, i)((node)->bp[i].workdone)
++#define BP_TOUCH_CLOCK(node, i) ((node)->bp[i].clock_count = 1)
++#define BP_SWEEP_CLOCK(node, i) ((node)->bp[i].clock_count = 0)
++#define BP_SHOULD_EVICT(node, i) ((node)->bp[i].clock_count == 0)
++#define BP_INIT_TOUCHED_CLOCK(node, i) ((node)->bp[i].clock_count = 1)
++#define BP_INIT_UNTOUCHED_CLOCK(node, i) ((node)->bp[i].clock_count = 0)
++#define BLB_MAX_MSN_APPLIED(node,i) (BLB(node,i)->max_msn_applied) 
++#define BLB_MAX_DSN_APPLIED(node,i) (BLB(node,i)->max_dsn_applied)
++#define BLB_DATA(node,i) (&(BLB(node,i)->data_buffer))
++#define BLB_NBYTESINDATA(node,i) (BLB_DATA(node,i)->get_disk_size())
++#define BLB_SEQINSERT(node,i) (BLB(node,i)->seqinsert)
++#define BLB_LRD(node, i) (BLB(node,i)->logical_rows_delta)
++
++//inline void set_BNC_cutdown(struct _ftnode *node, int i, 
++
++#define FT_LAYOUT_VERSION_14 14 
++
++struct ftnode_disk_data {
++	uint32_t start;
++	uint32_t size;
++};
++
++typedef struct ftnode_disk_data *FTNODE_DISK_DATA;
++
++enum ftnode_fetch_type {
++	ftnode_fetch_none = 1,
++	ftnode_fetch_subset,
++	ftnode_fetch_prefetch,
++	ftnode_fetch_all,
++	ftnode_fetch_keymatch,	
++};
++
++struct ftnode_fetch_extra {
++	uint8_t ft;
++	enum ftnode_fetch_type type;
++	struct _ft_search *search;
++	struct _dbt range_lock_left_key, range_lock_right_key;
++	bool left_is_neg_infty, right_is_pos_infty;
++	bool disable_prefetching;
++	int child_to_read;
++	bool read_all_partitions;
++	uint64_t bytes_read;
++	uint64_t io_time;
++	uint64_t decompress_time;
++	uint64_t deserialize_time;
++};
++
++int leftmost_child_wanted(struct ftnode_fetch_extra *ffe, struct _ftnode *node);
++int rightmost_child_wanted(struct ftnode_fetch_extra *ffe, struct _ftnode *node);
++
++int _search_which_child(struct _comparator *cmp, struct _ftnode *node, struct _ft_search *search);
++
++inline void set_BSB(struct _ftnode *node, int i, struct _sub_block *sb); 
++inline struct _sub_block *BSB(struct _ftnode *node, int i); 
++
++void init_ffe(struct ftnode_fetch_extra *fe);
++
++#endif /* DBIN_H */
+diff --git a/drivers/nvme/host/nvme.h b/drivers/nvme/host/nvme.h
+index 2e04a36296d9..ef2c65fe675b 100644
+--- a/drivers/nvme/host/nvme.h
++++ b/drivers/nvme/host/nvme.h
+@@ -38,6 +38,8 @@ extern struct workqueue_struct *nvme_wq;
+ extern struct workqueue_struct *nvme_reset_wq;
+ extern struct workqueue_struct *nvme_delete_wq;
+ 
++//extern struct nvme_queue;
++
+ enum {
+ 	NVME_NS_LBA		= 0,
+ 	NVME_NS_LIGHTNVM	= 1,
+@@ -139,6 +141,7 @@ struct nvme_request {
+ 	u8			flags;
+ 	u16			status;
+ 	struct nvme_ctrl	*ctrl;
++	unsigned long key;
+ };
+ 
+ /*
+@@ -146,6 +149,8 @@ struct nvme_request {
+  */
+ #define REQ_NVME_MPATH		REQ_DRV
+ 
++#define REQ_TREENVME		REQ_SWAP
++
+ enum {
+ 	NVME_REQ_CANCELLED		= (1 << 0),
+ 	NVME_REQ_USERCMD		= (1 << 1),
+@@ -353,6 +358,8 @@ struct nvme_ns_head {
+ 	struct list_head	entry;
+ 	struct kref		ref;
+ 	int			instance;
++	struct treenvme_ns *tns;
++
+ #ifdef CONFIG_NVME_MULTIPATH
+ 	struct gendisk		*disk;
+ 	struct bio_list		requeue_list;
+@@ -368,7 +375,9 @@ struct nvme_ns {
+ 
+ 	struct nvme_ctrl *ctrl;
+ 	struct request_queue *queue;
++	struct request_queue *tqueue;
+ 	struct gendisk *disk;
++	struct gendisk *tdisk;
+ #ifdef CONFIG_NVME_MULTIPATH
+ 	enum nvme_ana_state ana_state;
+ 	u32 ana_grpid;
+@@ -377,6 +386,64 @@ struct nvme_ns {
+ 	struct nvm_dev *ndev;
+ 	struct kref kref;
+ 	struct nvme_ns_head *head;
++	struct treenvme_head *thead;
++
++	int lba_shift;
++	u16 ms;
++	u16 sgs;
++	u32 sws;
++	bool ext;
++	u8 pi_type;
++	unsigned long flags;
++#define NVME_NS_REMOVING	0
++#define NVME_NS_DEAD     	1
++#define NVME_NS_ANA_PENDING	2
++	u16 noiob;
++
++	struct nvme_fault_inject fault_inject;
++
++};
++
++// alter
++struct treenvme_head {
++	struct list_head	list;
++	struct srcu_struct      srcu;
++	struct nvme_subsystem	*subsys;
++	unsigned		ns_id;
++	struct nvme_ns_ids	ids;
++	struct list_head	entry;
++	struct kref		ref;
++	int			instance;
++	struct gendisk		*disk;
++	struct bio_list		requeue_list;
++	spinlock_t		requeue_lock;
++	struct work_struct	requeue_work;
++	struct mutex		lock;
++#ifdef CONFIG_NVME_TREENVME
++	struct nvme_ns __rcu	*current_path[];
++#endif
++};
++
++#ifdef CONFIG_NVME_TREENVME
++struct treenvme_ctx;
++
++#endif
++
++struct treenvme_ns {
++	struct list_head list;
++	struct nvme_ctrl *ctrl;
++	struct request_queue *queue;
++	struct gendisk *disk;
++#ifdef CONFIG_NVME_TREENVME
++	enum nvme_ana_state ana_state;
++	u32 ana_grpid;
++#endif
++	struct list_head siblings;
++	struct nvm_dev *ndev;
++	struct kref kref;
++	struct nvme_ns_head *head;
++	// alter
++	struct treenvme_head *thead;
+ 
+ 	int lba_shift;
+ 	u16 ms;
+@@ -540,6 +607,132 @@ int nvme_get_log(struct nvme_ctrl *ctrl, u32 nsid, u8 log_page, u8 lsp,
+ extern const struct attribute_group *nvme_ns_id_attr_groups[];
+ extern const struct block_device_operations nvme_ns_head_ops;
+ 
++// alter -- treenvme
++extern const struct block_device_operations treenvme_fops;
++/*
++ * Represents an NVM Express device.  Each nvme_dev is a PCI function.
++ */
++struct nvme_dev {
++	struct nvme_queue *queues;
++	struct blk_mq_tag_set tagset;
++	struct blk_mq_tag_set admin_tagset;
++	u32 __iomem *dbs;
++	struct device *dev;
++	struct dma_pool *prp_page_pool;
++	struct dma_pool *prp_small_pool;
++	unsigned online_queues;
++	unsigned max_qid;
++	unsigned io_queues[HCTX_MAX_TYPES];
++	unsigned int num_vecs;
++	int q_depth;
++	int io_sqes;
++	u32 db_stride;
++	void __iomem *bar;
++	unsigned long bar_mapped_size;
++	struct work_struct remove_work;
++	struct mutex shutdown_lock;
++	bool subsystem;
++	u64 cmb_size;
++	bool cmb_use_sqes;
++	u32 cmbsz;
++	u32 cmbloc;
++	struct nvme_ctrl ctrl;
++	u32 last_ps;
++
++	mempool_t *iod_mempool;
++
++	/* shadow doorbell buffer support: */
++	u32 *dbbuf_dbs;
++	dma_addr_t dbbuf_dbs_dma_addr;
++	u32 *dbbuf_eis;
++	dma_addr_t dbbuf_eis_dma_addr;
++
++	/* host memory buffer support: */
++	u64 host_mem_size;
++	u32 nr_host_mem_descs;
++	dma_addr_t host_mem_descs_dma;
++	struct nvme_host_mem_buf_desc *host_mem_descs;
++	void **host_mem_desc_bufs;
++};
++/*
++ * An NVM Express queue.  Each device has at least two (one for admin
++ * commands and one for I/O commands).
++ */
++struct nvme_queue {
++	struct nvme_dev *dev;
++	spinlock_t sq_lock;
++	void *sq_cmds;
++	 /* only used for poll queues: */
++	spinlock_t cq_poll_lock ____cacheline_aligned_in_smp;
++	volatile struct nvme_completion *cqes;
++	dma_addr_t sq_dma_addr;
++	dma_addr_t cq_dma_addr;
++	u32 __iomem *q_db;
++	u16 q_depth;
++	u16 cq_vector;
++	u16 sq_tail;
++	u16 last_sq_tail;
++	u16 cq_head;
++	u16 qid;
++	u8 cq_phase;
++	u8 sqes;
++	unsigned long flags;
++#define NVMEQ_ENABLED		0
++#define NVMEQ_SQ_CMB		1
++#define NVMEQ_DELETE_ERROR	2
++#define NVMEQ_POLLED		3
++	u32 *dbbuf_sq_db;
++	u32 *dbbuf_cq_db;
++	u32 *dbbuf_sq_ei;
++	u32 *dbbuf_cq_ei;
++	struct completion delete_done;
++};
++
++/*
++ * The nvme_iod describes the data in an I/O.
++ *
++ * The sg pointer contains the list of PRP/SGL chunk allocations in addition
++ * to the actual struct scatterlist.
++ */
++struct nvme_iod {
++	struct nvme_request req;
++	struct nvme_queue *nvmeq;
++	bool use_sgl;
++       	int aborted;
++	int npages;		/* In the PRP list. 0 means small pool in use */
++	int nents;		/* Used in scatterlist */
++	dma_addr_t first_dma;
++	unsigned int dma_len;	/* length of single DMA segment mapping */
++	dma_addr_t meta_dma;
++	struct scatterlist *sg;
++};
++void nvme_submit_cmd(struct nvme_queue *nvmeq, struct nvme_command *cmd, bool write_sq);
++blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req, struct nvme_command *cmnd);
++blk_status_t nvme_map_metadata(struct nvme_dev *dev, struct request *req, struct nvme_command *cmnd);
++extern const struct block_device_operations treenvme_head_ops;
++//void add_treedisk(struct nvme_ctrl *ctrl, struct nvme_ns *ns, unsigned nsid);
++int nvme_identify_ns(struct nvme_ctrl *ctrl, unsigned nsid, struct nvme_id_ns **id);    
++void nvme_set_queue_limits(struct nvme_ctrl *ctrl, struct request_queue *q);
++void __nvme_revalidate_disk(struct gendisk *disk, struct nvme_id_ns *id); 
++int nvme_submit_user_cmd(struct request_queue *q, struct nvme_command *cmd, void __user *ubuffer, unsigned bufflen, void __user *meta_buffer, unsigned meta_len, u32 meta_seed, u64 *result, unsigned timeout);
++
++#ifdef CONFIG_NVME_TREENVME
++void add_treedisk(struct nvme_ctrl *ctrl, struct nvme_ns *ns, unsigned nsid);
++void treenvme_set_name(char *disk_name, struct nvme_ns *ns, struct nvme_ctrl *ctrl, int *flags);
++int treenvme_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd, unsigned long arg);
++void nvme_backpath(struct nvme_queue *nvmeq, u16 idx, struct request *req, volatile struct nvme_completion *cqe);
++#else
++/*
++void add_treedisk(struct nvme_ctrl *ctrl, struct nvme_ns *ns, unsigned nsid){
++}
++void treenvme_set_name(char *disk_name, struct nvme_ns *ns, struct nvme_ctrl *ctrl, int *flags){}
++int treenvme_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd, unsigned long arg){}
++*/
++inline void nvme_backpath(struct nvme_queue *nvmeq, u16 idx, struct request *req, volatile struct nvme_completion *cqe){
++}
++#endif /* CONFIG_NVME_TREENVME */
++
++
+ #ifdef CONFIG_NVME_MULTIPATH
+ static inline bool nvme_ctrl_use_ana(struct nvme_ctrl *ctrl)
+ {
+@@ -562,6 +755,9 @@ void nvme_mpath_stop(struct nvme_ctrl *ctrl);
+ bool nvme_mpath_clear_current_path(struct nvme_ns *ns);
+ void nvme_mpath_clear_ctrl_paths(struct nvme_ctrl *ctrl);
+ struct nvme_ns *nvme_find_path(struct nvme_ns_head *head);
++int treenvme_alloc_disk(struct nvme_ctrl *ctrl,struct treenvme_head *head);
++blk_qc_t treenvme_make_request(struct request_queue *q, struct bio *bio);
++
+ 
+ static inline void nvme_mpath_check_last_path(struct nvme_ns *ns)
+ {
+@@ -657,6 +853,13 @@ static inline void nvme_mpath_start_freeze(struct nvme_subsystem *subsys)
+ {
+ }
+ #endif /* CONFIG_NVME_MULTIPATH */
++struct treenvme_ctx {
++	struct nvme_dev *dev;
++	struct block_table *bt;
++	struct task_struct *task;
++	struct bpf_prog __rcu *ddp_prog;
++	struct list_head keys;
++};
+ 
+ #ifdef CONFIG_NVM
+ int nvme_nvm_register(struct nvme_ns *ns, char *disk_name, int node);
+diff --git a/drivers/nvme/host/pci.c b/drivers/nvme/host/pci.c
+index cc46e250fcac..e60a882894c5 100644
+--- a/drivers/nvme/host/pci.c
++++ b/drivers/nvme/host/pci.c
+@@ -39,6 +39,8 @@
+  */
+ #define NVME_MAX_KB_SZ	4096
+ #define NVME_MAX_SEGS	127
++#define DEBUG 1
++//#define DEBUGS 1
+ 
+ static int use_threaded_interrupts;
+ module_param(use_threaded_interrupts, int, 0);
+@@ -78,57 +80,18 @@ static unsigned int poll_queues;
+ module_param(poll_queues, uint, 0644);
+ MODULE_PARM_DESC(poll_queues, "Number of queues to use for polled IO.");
+ 
+-struct nvme_dev;
+-struct nvme_queue;
++static unsigned int dep_depth;
++module_param(dep_depth, uint, 0644);
++MODULE_PARM_DESC(dep_depth, "depth of dependencies."); 
++
++//struct nvme_dev;
++//struct nvme_queue;
+ 
+ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown);
+ static bool __nvme_disable_io_queues(struct nvme_dev *dev, u8 opcode);
+-
+-/*
+- * Represents an NVM Express device.  Each nvme_dev is a PCI function.
+- */
+-struct nvme_dev {
+-	struct nvme_queue *queues;
+-	struct blk_mq_tag_set tagset;
+-	struct blk_mq_tag_set admin_tagset;
+-	u32 __iomem *dbs;
+-	struct device *dev;
+-	struct dma_pool *prp_page_pool;
+-	struct dma_pool *prp_small_pool;
+-	unsigned online_queues;
+-	unsigned max_qid;
+-	unsigned io_queues[HCTX_MAX_TYPES];
+-	unsigned int num_vecs;
+-	int q_depth;
+-	int io_sqes;
+-	u32 db_stride;
+-	void __iomem *bar;
+-	unsigned long bar_mapped_size;
+-	struct work_struct remove_work;
+-	struct mutex shutdown_lock;
+-	bool subsystem;
+-	u64 cmb_size;
+-	bool cmb_use_sqes;
+-	u32 cmbsz;
+-	u32 cmbloc;
+-	struct nvme_ctrl ctrl;
+-	u32 last_ps;
+-
+-	mempool_t *iod_mempool;
+-
+-	/* shadow doorbell buffer support: */
+-	u32 *dbbuf_dbs;
+-	dma_addr_t dbbuf_dbs_dma_addr;
+-	u32 *dbbuf_eis;
+-	dma_addr_t dbbuf_eis_dma_addr;
+-
+-	/* host memory buffer support: */
+-	u64 host_mem_size;
+-	u32 nr_host_mem_descs;
+-	dma_addr_t host_mem_descs_dma;
+-	struct nvme_host_mem_buf_desc *host_mem_descs;
+-	void **host_mem_desc_bufs;
+-};
++//void nvme_backpath(struct nvme_queue *nvmeq, u16 idx, struct request *req, struct nvme_completion *cqe);
++int treenvme_init(void);
++void treenvme_exit(void);
+ 
+ static int io_queue_depth_set(const char *val, const struct kernel_param *kp)
+ {
+@@ -156,59 +119,6 @@ static inline struct nvme_dev *to_nvme_dev(struct nvme_ctrl *ctrl)
+ 	return container_of(ctrl, struct nvme_dev, ctrl);
+ }
+ 
+-/*
+- * An NVM Express queue.  Each device has at least two (one for admin
+- * commands and one for I/O commands).
+- */
+-struct nvme_queue {
+-	struct nvme_dev *dev;
+-	spinlock_t sq_lock;
+-	void *sq_cmds;
+-	 /* only used for poll queues: */
+-	spinlock_t cq_poll_lock ____cacheline_aligned_in_smp;
+-	volatile struct nvme_completion *cqes;
+-	dma_addr_t sq_dma_addr;
+-	dma_addr_t cq_dma_addr;
+-	u32 __iomem *q_db;
+-	u16 q_depth;
+-	u16 cq_vector;
+-	u16 sq_tail;
+-	u16 last_sq_tail;
+-	u16 cq_head;
+-	u16 qid;
+-	u8 cq_phase;
+-	u8 sqes;
+-	unsigned long flags;
+-#define NVMEQ_ENABLED		0
+-#define NVMEQ_SQ_CMB		1
+-#define NVMEQ_DELETE_ERROR	2
+-#define NVMEQ_POLLED		3
+-	u32 *dbbuf_sq_db;
+-	u32 *dbbuf_cq_db;
+-	u32 *dbbuf_sq_ei;
+-	u32 *dbbuf_cq_ei;
+-	struct completion delete_done;
+-};
+-
+-/*
+- * The nvme_iod describes the data in an I/O.
+- *
+- * The sg pointer contains the list of PRP/SGL chunk allocations in addition
+- * to the actual struct scatterlist.
+- */
+-struct nvme_iod {
+-	struct nvme_request req;
+-	struct nvme_queue *nvmeq;
+-	bool use_sgl;
+-	int aborted;
+-	int npages;		/* In the PRP list. 0 means small pool in use */
+-	int nents;		/* Used in scatterlist */
+-	dma_addr_t first_dma;
+-	unsigned int dma_len;	/* length of single DMA segment mapping */
+-	dma_addr_t meta_dma;
+-	struct scatterlist *sg;
+-};
+-
+ static unsigned int max_io_queues(void)
+ {
+ 	return num_possible_cpus() + write_queues + poll_queues;
+@@ -472,17 +382,19 @@ static inline void nvme_write_sq_db(struct nvme_queue *nvmeq, bool write_sq)
+  * @cmd: The command to send
+  * @write_sq: whether to write to the SQ doorbell
+  */
+-static void nvme_submit_cmd(struct nvme_queue *nvmeq, struct nvme_command *cmd,
++void nvme_submit_cmd(struct nvme_queue *nvmeq, struct nvme_command *cmd,
+ 			    bool write_sq)
+ {
+-	spin_lock(&nvmeq->sq_lock);
++	unsigned long flags;
++	spin_lock_irqsave(&nvmeq->sq_lock, flags);
+ 	memcpy(nvmeq->sq_cmds + (nvmeq->sq_tail << nvmeq->sqes),
+ 	       cmd, sizeof(*cmd));
+ 	if (++nvmeq->sq_tail == nvmeq->q_depth)
+ 		nvmeq->sq_tail = 0;
+ 	nvme_write_sq_db(nvmeq, write_sq);
+-	spin_unlock(&nvmeq->sq_lock);
++	spin_unlock_irqrestore(&nvmeq->sq_lock, flags);
+ }
++EXPORT_SYMBOL_GPL(nvme_submit_cmd);
+ 
+ static void nvme_commit_rqs(struct blk_mq_hw_ctx *hctx)
+ {
+@@ -791,7 +703,7 @@ static blk_status_t nvme_setup_sgl_simple(struct nvme_dev *dev,
+ 	return 0;
+ }
+ 
+-static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
++blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
+ 		struct nvme_command *cmnd)
+ {
+ 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+@@ -841,8 +753,9 @@ static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
+ 		nvme_unmap_data(dev, req);
+ 	return ret;
+ }
++EXPORT_SYMBOL_GPL(nvme_map_data);
+ 
+-static blk_status_t nvme_map_metadata(struct nvme_dev *dev, struct request *req,
++blk_status_t nvme_map_metadata(struct nvme_dev *dev, struct request *req,
+ 		struct nvme_command *cmnd)
+ {
+ 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+@@ -854,6 +767,7 @@ static blk_status_t nvme_map_metadata(struct nvme_dev *dev, struct request *req,
+ 	cmnd->rw.metadata = cpu_to_le64(iod->meta_dma);
+ 	return 0;
+ }
++EXPORT_SYMBOL_GPL(nvme_map_metadata); 
+ 
+ /*
+  * NOTE: ns is NULL when called on the admin queue.
+@@ -896,6 +810,28 @@ static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
+ 			goto out_unmap_data;
+ 	}
+ 
++/*
++#ifdef DEBUG
++	printk(KERN_ERR "Got here before memcpy\n");
++#endif
++	//  handling of the entry buffer
++	if (req->bio != NULL)
++	if (req->bio->bi_opf != NULL)
++	if (req->bio->bi_opf && REQ_TREENVME)
++		if (bio_data(req->bio) != NULL)
++		memcpy(&nvme_req(req)->key, bio_data(req->bio), sizeof(unsigned long));
++
++#ifdef DEBUG
++	printk(KERN_ERR "INSIDE NVME:Key of %lu\n", nvme_req(req)->key);
++#endif
++*/
++
++#ifdef DEBUGS
++	if (!op_is_write(req_op(req)))
++	{
++		printk(KERN_ERR "SECTOR IS: %lu\n", req->__sector);
++	}
++#endif
+ 	blk_mq_start_request(req);
+ 	nvme_submit_cmd(nvmeq, &cmnd, bd->last);
+ 	return BLK_STS_OK;
+@@ -968,7 +904,70 @@ static inline void nvme_handle_cqe(struct nvme_queue *nvmeq, u16 idx)
+ 
+ 	req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), cqe->command_id);
+ 	trace_nvme_sq(req, cqe->sq_head, nvmeq->sq_tail);
+-	nvme_end_request(req, cqe->status, cqe->result);
++
++	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++	//struct nvme_queue *nvmeq = iod->nvmeq;
++	struct nvme_ns *ns = req->q->queuedata;
++	struct nvme_dev *dev = iod->nvmeq->dev;
++	struct nvme_command cmnd;
++	blk_status_t ret;
++
++#ifdef CONFIG_NVME_TREENVME
++	if (req->cmd_flags & REQ_TREENVME)
++	{
++		/*
++		printk(KERN_ERR "GOT HERE -- rebound \n");
++		if (req->alter_count < dep_depth)
++		{
++			req->alter_count += 1;
++			// alter
++			ret = nvme_setup_cmd(ns, req, &cmnd);
++			if (ret)
++				printk(KERN_ERR "submit error\n");
++			//printk(KERN_ERR "Got here 2\n");x
++			if (blk_rq_nr_phys_segments(req)) {
++				ret = nvme_map_data(dev, req, &cmnd);
++				if (ret)
++					printk(KERN_ERR "mapping error\n");
++			}
++			if (blk_integrity_rq(req)) {
++				ret = nvme_map_metadata(dev, req, &cmnd);
++				if (ret)
++					printk(KERN_ERR "meta error\n");
++			}
++			cmnd.rw.slba = cpu_to_le64(nvme_sect_to_lba(ns, blk_rq_pos(req)));
++			nvme_req(req)->cmd = &cmnd;
++			printk(KERN_ERR "SECTOR NUMBER IS %d\n", cmnd.rw.slba);
++
++			int ret;
++			struct bio_vec bvec;
++			struct req_iterator iter;
++
++			rq_for_each_segment(bvec, req, iter)
++			{
++				char *buffer = bio_data(req->bio);
++				printk(KERN_ERR "char bio: %s \n", buffer);
++			}
++			nvme_submit_cmd(nvmeq, &cmnd, true);
++		}
++		else
++		{
++			//printk(KERN_ERR "Final\n");
++			req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), req->first_command_id);
++			nvme_end_request(req, cqe->status, cqe->result);
++		}
++		*/
++		nvme_backpath(nvmeq, idx, req, cqe);
++	}
++	else {
++		//req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), req->first_command_id);
++		nvme_end_request(req, cqe->status, cqe->result);
++	}
++#else
++		//req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), req->first_command_id);
++		nvme_end_request(req, cqe->status, cqe->result);
++#endif
++	
+ }
+ 
+ static inline void nvme_update_cq_head(struct nvme_queue *nvmeq)
+@@ -2100,7 +2099,7 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
+ 
+ 	if (nr_io_queues == 0)
+ 		return 0;
+-	
++
+ 	clear_bit(NVMEQ_ENABLED, &adminq->flags);
+ 
+ 	if (dev->cmb_use_sqes) {
+@@ -3133,11 +3132,17 @@ static int __init nvme_init(void)
+ 
+ 	write_queues = min(write_queues, num_possible_cpus());
+ 	poll_queues = min(poll_queues, num_possible_cpus());
++#ifdef CONFIG_NVME_TREENVME
++	treenvme_init();
++#endif
+ 	return pci_register_driver(&nvme_driver);
+ }
+ 
+ static void __exit nvme_exit(void)
+ {
++#ifdef CONFIG_NVME_TREENVME
++	treenvme_exit();
++#endif
+ 	pci_unregister_driver(&nvme_driver);
+ 	flush_workqueue(nvme_wq);
+ }
+diff --git a/drivers/nvme/host/simplekvspec.h b/drivers/nvme/host/simplekvspec.h
+new file mode 100644
+index 000000000000..412d8e504372
+--- /dev/null
++++ b/drivers/nvme/host/simplekvspec.h
+@@ -0,0 +1,39 @@
++#ifndef DB_H
++#define DB_H
++
++//#include <stddef.h>
++//#include <stdio.h>
++
++// Data-level information
++typedef unsigned long meta__t;
++typedef unsigned long key__t;
++typedef unsigned char val__t[64];
++typedef unsigned long ptr__t;
++
++#define META_SIZE sizeof(meta__t)
++#define KEY_SIZE sizeof(key__t)
++#define VAL_SIZE sizeof(val__t)
++#define PTR_SIZE sizeof(ptr__t)
++#define BLK_SIZE 512
++#define BLK_SIZE_LOG 9
++
++// Node-level information
++#define INTERNALNODE 0
++#define LEAFNODE 1
++
++#define NODE_CAPACITY ((BLK_SIZE - 2 * META_SIZE) / (KEY_SIZE + PTR_SIZE))
++#define LOG_CAPACITY  ((BLK_SIZE) / (VAL_SIZE))
++#define FANOUT NODE_CAPACITY
++
++typedef struct _Node {
++    meta__t num;
++    meta__t type;
++    key__t key[NODE_CAPACITY];
++    ptr__t ptr[NODE_CAPACITY];
++} Node;
++
++typedef struct _Log {
++    val__t val[LOG_CAPACITY];
++} Log;
++
++#endif
+diff --git a/drivers/nvme/host/tokuspec.h b/drivers/nvme/host/tokuspec.h
+new file mode 100644
+index 000000000000..592458da98df
+--- /dev/null
++++ b/drivers/nvme/host/tokuspec.h
+@@ -0,0 +1,120 @@
++// This is a key-data structure..
++
++#include <linux/hashtable.h>
++
++//#define FREE 0xFFFFFFFFFFFFFFFF 
++//#define FREE 0xFFFF000000000000
++#define FREE 0x500000
++struct DBT {
++	void *data;		/* key value */
++	uint32_t size;		/* key/data length */
++	uint32_t ulen;		/* read-only: length of user buffer */
++	uint32_t dlen;		/* read-only: get/put record length */
++	uint32_t doff;		/* read-only: get/put record offset */
++	void *app_data;
++	uint32_t flags;
++	uint32_t blocknum;
++};
++
++struct pivot_bounds {
++	int num_pivots;
++	int total_size;
++	char *fixed_keys;
++	int fixed_keylen;
++	int fixed_keylen_aligned;
++	struct DBT *dbt_keys;
++};
++
++struct block_data {
++	uint32_t start;
++	uint32_t end;
++	uint32_t size;
++};
++
++enum child_tag {
++	SUBBLOCK = 1,
++	BASEMENT = 2,
++};
++
++struct subblock_data {
++	void *ptr;
++	uint32_t csize; // compressed size
++	uint32_t usize; // uncompressed size
++};
++
++struct basement_data {
++	uint32_t le_offset;
++	uint8_t key[0];
++	struct hlist_node node;
++};
++
++struct child_node_data {
++	int blocknum;
++	union {
++		struct subblock_data *sublock;
++		struct basement_data *leaf;
++	} u;
++	enum child_tag tag;
++};
++
++struct ctpair;
++
++struct tokunode {
++	int max_msn_applied_to_node_on_disk;
++	unsigned int flags;
++	uint64_t blocknum;
++	int layout_version;
++	int layout_version_original;
++	int layout_version_read_from_disk;
++	uint32_t build_id;
++	int height;
++	int dirty_;
++	uint32_t fullhash;
++	int n_children;
++	struct pivot_bounds *pivotkeys;
++	struct child_node_data *cnd;
++	struct ctpair *ct_pair;
++};
++
++typedef int (*comparator)(char *a, char *b, int asize, int bsize);
++
++enum search_direction {
++	LEFT_TO_RIGHT,
++	RIGHT_TO_LEFT
++};
++
++struct search_ctx {
++	comparator compare;
++	enum search_direction direction;
++       	const struct DBT *k;
++	void *user_data;
++	struct DBT *pivot_bound;	
++	const struct DBT *k_bound;
++};
++
++enum translation_type {
++	TRANSLATION_NONE = 0,
++	TRANSLATION_CURRENT,
++	TRANSLATION_INPROGRESS,
++	TRANSLATION_CHECKPOINTED,
++	TRANSLATION_DEBUG
++};
++
++struct block_struct { int64_t b; };
++
++struct block_translation_pair {
++	union {
++		uint64_t diskoff;
++		struct block_struct free_blocknum;	
++	} u;
++
++	uint64_t size;
++};
++
++struct block_table {
++	enum translation_type type;
++	int64_t length_of_array;
++	struct block_struct smallest;
++	struct block_struct next_head;
++	struct block_translation_pair *block_translation; 
++};
+diff --git a/drivers/nvme/host/treenvme-core.c b/drivers/nvme/host/treenvme-core.c
+new file mode 100644
+index 000000000000..cf21acad0c92
+--- /dev/null
++++ b/drivers/nvme/host/treenvme-core.c
+@@ -0,0 +1,519 @@
++#include <linux/anon_inodes.h>
++#include <linux/file.h>
++#include <linux/moduleparam.h>
++#include <linux/module.h>
++#include <linux/blkdev.h>
++#include <linux/treenvme.h>
++#include <linux/nvme_ioctl.h>
++#include <linux/treenvme_ioctl.h>
++#include <trace/events/block.h>
++#include "nvme.h"
++
++struct treenvme_ctx *tctx;
++EXPORT_SYMBOL_GPL(tctx);
++
++#define KEYINBUF 1
++
++inline void add_treedisk(struct nvme_ctrl *ctrl, struct nvme_ns *ns, unsigned nsid);
++static const struct file_operations treenvme_ctrl_fops;
++extern const struct block_device_operations treenvme_fops;
++static int activated = 0;
++
++void treenvme_set_name(char *disk_name, struct nvme_ns *ns, struct nvme_ctrl *ctrl, int *flags)
++{
++	sprintf(disk_name, "treenvme%d", ctrl->subsys->instance);
++}
++
++static inline void *bio_data_none(struct bio *bio)
++{
++	return page_address(bio_page(bio)) + bio_offset(bio);
++}
++
++blk_qc_t treenvme_make_request(struct request_queue *q, struct bio *bio)
++{
++	struct nvme_ns *ns = q->queuedata;
++	struct device *dev = disk_to_dev(ns->tdisk);
++
++	blk_qc_t ret = BLK_QC_T_NONE;
++	int srcu_idx;
++
++#ifdef DEBUGS
++	printk(KERN_ERR "GOTHEREMADEAREADINTREENVME\n");
++	printk(KERN_ERR "IOVEC NUM: %hu\n", bio->bi_vcnt);
++	printk(KERN_ERR "CURRBYTES: %d\n", bio_cur_bytes(bio));
++#endif
++	//blk_queue_split(q, &bio);
++	bio->bi_disk = ns->disk;
++	if (activated == 1)
++		bio->bi_opf |= REQ_TREENVME;
++	bio->_imposter_level = 10;
++	bio->_imposter_count = 0;
++#ifdef DEBUG2
++	//printk(KERN_ERR "Offset is %lu\n", bio_offset(bio));
++	//unsigned long val;
++	//memcpy(&val, bio_data_none(bio), sizeof(unsigned long));
++	//printk(KERN_ERR "Key can be found at %lu\n", val);
++#endif
++#ifdef KEYINBUF
++	unsigned long v;
++	void *p = bio_data_none(bio);
++	memcpy(&v, p, sizeof(unsigned long));
++#ifdef DEBUGS
++	printk(KERN_ERR "KEYFROMREQ: %d\n", v);
++#endif
++	bio->key = v;
++#endif
++	ret = direct_make_request(bio);
++	return ret;
++}
++
++#define TREENVME_OFF_BLOCKTABLE 0ULL
++#define TREENVME_OFF_SQES	0x8000000ULL
++// taken from io_uring
++static void *treenvme_validate_mmap_request(struct file *file, loff_t pgoff, size_t sz)
++{
++	struct treenvme_ctx *_tctx = file->private_data;
++	loff_t offset = pgoff << PAGE_SHIFT;
++	struct page *page;
++	void *ptr;
++
++	switch(offset) {
++	case TREENVME_OFF_BLOCKTABLE:
++#ifdef DEBUG
++		printk(KERN_ERR "Mmap'ed at the block table.\n");
++#endif
++		ptr = _tctx->bt;
++		break;
++	case TREENVME_OFF_SQES:
++#ifdef DEBUG
++		printk(KERN_ERR "Mmap'ed at the submission events.\n");
++#endif
++		ptr = _tctx->bt;
++		break;
++	default:
++		return ERR_PTR(-EINVAL);
++	}	
++
++	page = virt_to_head_page(ptr);
++	if (sz > page_size(page))
++		return ERR_PTR(-EINVAL);
++
++	return ptr;
++}
++
++static int treenvme_mmap(struct file *file, struct vm_area_struct *vma)
++{
++	size_t sz = vma->vm_end - vma->vm_start;
++	unsigned long pfn;
++	void *ptr;
++
++	ptr = treenvme_validate_mmap_request(file, vma->vm_pgoff, sz);
++	if (IS_ERR(ptr))
++		return PTR_ERR(ptr);
++
++	pfn = virt_to_phys(ptr) >> PAGE_SHIFT;
++
++}
++
++static int treenvme_get_fd(struct treenvme_ctx *tctx)
++{
++	struct file *file;
++	int ret;
++
++	ret = get_unused_fd_flags( O_RDWR | O_CLOEXEC );
++	if (ret < 0)
++		goto err; 
++	file = anon_inode_getfile("[treenvme]", &treenvme_ctrl_fops, tctx, O_RDWR | O_CLOEXEC);
++	if (IS_ERR(file)){
++		put_unused_fd(ret);
++		ret = PTR_ERR(file);
++		goto err;
++	}
++err:
++	return -1;
++}
++// setup
++static int treenvme_setup_ctx(struct nvme_ns *ns, void *argp) 
++{
++	int r;
++#ifdef DEBUG
++	printk(KERN_ERR "Got into treenvme context setup.\n");
++#endif
++	struct nvme_ns *file;
++	tctx->task = get_task_struct(current);	
++	
++	r = treenvme_get_fd(tctx);
++#ifdef DEBUG
++	printk(KERN_ERR "File is %u\n", r);
++#endif
++	return r;
++}
++
++// All the treenvme operations
++
++static void *treenvme_add_user_metadata(struct bio *bio, void __user *ubuf,
++		unsigned len, u32 seed, bool write)
++{
++	struct bio_integrity_payload *bip;
++	int ret = -ENOMEM;
++	void *buf;
++
++	buf = kmalloc(len, GFP_KERNEL);
++	if (!buf)
++		goto out;
++
++	ret = -EFAULT;
++	if (write && copy_from_user(buf, ubuf, len))
++		goto out_free_meta;
++
++	bip = bio_integrity_alloc(bio, GFP_KERNEL, 1);
++	if (IS_ERR(bip)) {
++		ret = PTR_ERR(bip);
++		goto out_free_meta;
++	}
++
++	bip->bip_iter.bi_size = len;
++	bip->bip_iter.bi_sector = seed;
++	ret = bio_integrity_add_page(bio, virt_to_page(buf), len,
++			offset_in_page(buf));
++	if (ret == len)
++		return buf;
++	ret = -ENOMEM;
++out_free_meta:
++	kfree(buf);
++out:
++	return ERR_PTR(ret);
++}
++
++static int treenvme_submit_user_cmd(struct request_queue *q,
++		struct nvme_command *cmd, void __user *ubuffer,
++		unsigned bufflen, void __user *meta_buffer, unsigned meta_len,
++		u32 meta_seed, u64 *result, unsigned timeout)
++{
++	bool write = nvme_is_write(cmd);
++	struct nvme_ns *ns = q->queuedata;
++	struct gendisk *disk = ns ? ns->disk : NULL;
++	struct request *req;
++	struct bio *bio = NULL;
++	void *meta = NULL;
++	int ret;
++
++	req = nvme_alloc_request(q, cmd, 0, NVME_QID_ANY);
++	if (IS_ERR(req))
++		return PTR_ERR(req);
++
++	req->timeout = timeout ? timeout : ADMIN_TIMEOUT;
++	nvme_req(req)->flags |= NVME_REQ_USERCMD;
++
++	if (ubuffer && bufflen) {
++		ret = blk_rq_map_user(q, req, NULL, ubuffer, bufflen,
++				GFP_KERNEL);
++		if (ret)
++			goto out;
++		bio = req->bio;
++		bio->bi_disk = disk;
++		if (disk && meta_buffer && meta_len) {
++			meta = treenvme_add_user_metadata(bio, meta_buffer, meta_len,
++					meta_seed, write);
++			if (IS_ERR(meta)) {
++				ret = PTR_ERR(meta);
++				goto out_unmap;
++			}
++			req->cmd_flags |= REQ_INTEGRITY;
++		}
++	}
++
++	blk_execute_rq(req->q, disk, req, 0);
++	if (nvme_req(req)->flags & NVME_REQ_CANCELLED)
++		ret = -EINTR;
++	else
++		ret = nvme_req(req)->status;
++	if (result)
++		*result = le64_to_cpu(nvme_req(req)->result.u64);
++	if (meta && !ret && !write) {
++		if (copy_to_user(meta_buffer, meta, meta_len))
++			ret = -EFAULT;
++	}
++	kfree(meta);
++ out_unmap:
++	if (bio)
++		blk_rq_unmap_user(bio);
++ out:
++	blk_mq_free_request(req);
++	return ret;
++}
++
++static void __user *nvme_to_user_ptr(uintptr_t ptrval)
++{
++	if (in_compat_syscall())
++		ptrval = (compat_uptr_t)ptrval;
++	return (void __user *)ptrval;
++}
++
++static int treenvme_submit_io(struct nvme_ns *ns, struct nvme_user_io __user *uio)
++{
++	struct nvme_user_io io;
++	struct nvme_command c;
++	unsigned length, meta_len;
++	void __user *metadata;
++
++	if (copy_from_user(&io, uio, sizeof(io)))
++		return -EFAULT;
++	if (io.flags)
++		return -EINVAL;
++
++	switch (io.opcode) {
++	case nvme_cmd_write:
++	case nvme_cmd_read:
++	case nvme_cmd_compare:
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	length = (io.nblocks + 1) << ns->lba_shift;
++	meta_len = (io.nblocks + 1) * ns->ms;
++	metadata = nvme_to_user_ptr(io.metadata);
++
++	if (ns->ext) {
++		length += meta_len;
++		meta_len = 0;
++	} else if (meta_len) {
++		if ((io.metadata & 3) || !io.metadata)
++			return -EINVAL;
++	}
++
++	memset(&c, 0, sizeof(c));
++	c.rw.opcode = io.opcode;
++	c.rw.flags = io.flags;
++	c.rw.nsid = cpu_to_le32(ns->head->ns_id);
++	c.rw.slba = cpu_to_le64(io.slba);
++	c.rw.length = cpu_to_le16(io.nblocks);
++	c.rw.control = cpu_to_le16(io.control);
++	c.rw.dsmgmt = cpu_to_le32(io.dsmgmt);
++	c.rw.reftag = cpu_to_le32(io.reftag);
++	c.rw.apptag = cpu_to_le16(io.apptag);
++	c.rw.appmask = cpu_to_le16(io.appmask);
++
++	return treenvme_submit_user_cmd(ns->queue, &c,
++			nvme_to_user_ptr(io.addr), length,
++			metadata, meta_len, lower_32_bits(io.slba), NULL, 0);
++}
++
++static void nvme_put_ns_from_disk(struct nvme_ns_head *head, int idx)
++{
++	if (head)
++		srcu_read_unlock(&head->srcu, idx);
++}
++
++// blocktable
++static int register_block_table(struct treenvme_block_table __user *bt)
++{
++#ifdef SIMPLEKV
++	printk(KERN_ERR "Block table is registered.\n");
++	int64_t len;
++	copy_from_user(&len, &bt->length_of_array, sizeof(int64_t));
++	printk(KERN_ERR "Length of %lld\n", len);
++	int i = 0;
++	unsigned long *ptr;
++	copy_from_user(&ptr, &bt->arr, sizeof(unsigned long *));	
++	for (i = 0; i < len; i++) {
++		struct key_entry *a = kmalloc(sizeof(struct key_entry), GFP_KERNEL);
++		copy_from_user(&a->a, &ptr[i], sizeof(unsigned long));
++		list_add(&a->entry, &tctx->keys);
++#ifdef DEBUG2
++		printk(KERN_ERR "Key of %lu\n", a->a);
++#endif
++	}
++#endif
++}
++
++static int register_toku_table(struct treenvme_block_toku_table __user *bt)
++{
++#ifdef TOKUDB
++	counter = 0;
++	/*
++	// This is wrong.
++	tctx->bt->length_of_array = bt->length_of_array;
++	tctx->bt->smallest = bt->smallest;
++	tctx->bt->next_head = bt->next_head;
++	*/
++	copy_from_user(&tctx->bt->length_of_array, &bt->length_of_array, sizeof(int64_t));
++	copy_from_user(&tctx->bt->smallest, &bt->smallest, sizeof(int64_t));
++	copy_from_user(&tctx->bt->next_head, &bt->next_head, sizeof(int64_t));
++#ifdef DEBUG
++	printk(KERN_ERR "Length of array is: %llu \n", tctx->bt->length_of_array);
++	printk(KERN_ERR "Smallest element is: %u \n", tctx->bt->smallest);
++	printk(KERN_ERR "Next head is: %u \n", tctx->bt->next_head);	
++#endif
++#ifdef DEBUG
++	printk(KERN_ERR "PRINTING WHOLE BLOCK TABLE.\n");
++#endif
++
++	//void * user_ptr;
++	//user_ptr = bt->block_translation;
++#ifdef DEBUG
++	void * user_ptr;
++	user_ptr = bt->block_translation;
++	//printk(KERN_ERR "USERSPACE ADDRESS IS %u.\n", user_ptr);
++#endif
++	struct block_translation_pair *new_bp;
++	new_bp = kmalloc(sizeof(struct block_translation_pair *), GFP_KERNEL);
++	//tctx->bt->block_translation = kmalloc((sizeof (struct block_translation_pair *)), GFP_KERNEL);
++	//copy_from_user(&tctx->bt->block_translation, &bt->block_translation, sizeof(struct block_translation_pair *));	
++	//copy_from_user(&new_bp, &bt->block_translation, sizeof(struct block_translation_pair *));
++		
++	tctx->bt->block_translation = kmalloc(sizeof(struct block_translation_pair) * tctx->bt->length_of_array, GFP_KERNEL);
++	int i = 0;
++	for (i = 0; i < tctx->bt->length_of_array; i++)
++	{
++		copy_from_user(&tctx->bt->block_translation[i], &new_bp[i], sizeof(struct block_translation_pair));
++#ifdef DEBUGMAX
++		printk(KERN_ERR "For blocknum %u", i);		
++		printk(KERN_ERR "OFFSET: %llx", tctx->bt->block_translation[i].u.diskoff);
++		printk(KERN_ERR "SIZE: %llu", tctx->bt->block_translation[i].size);
++#endif	
++		if (!(tctx->bt->block_translation[i].size <= FREE && tctx->bt->block_translation[i].u.diskoff <= FREE))
++		{
++			tctx->bt->block_translation[i].size = -1;
++			tctx->bt->block_translation[i].u.diskoff = -1;
++		}
++	}
++#ifdef DEBUG
++	printk(KERN_ERR "Finish transferring.\n");
++	for (i = 0; i < tctx->bt->length_of_array; i++)
++	{
++		// free is a constant that tokudb uses to signify empty
++		if (tctx->bt->block_translation[i].size != -1 && tctx->bt->block_translation[i].size != 0)
++		{
++		printk(KERN_ERR "For blocknum %u", i);		
++		printk(KERN_ERR "OFFSET: %llx", tctx->bt->block_translation[i].u.diskoff);
++		printk(KERN_ERR "SIZE: %llu", tctx->bt->block_translation[i].size);
++		}
++	}
++#endif
++#endif
++}
++
++// end
++/*
++const struct block_device_operations treenvme_fops = {
++	.owner		= THIS_MODULE,
++	.open		= nvme_open,
++	.release	= nvme_release,
++	.ioctl		= treenvme_ioctl,
++	.compat_ioctl	= nvme_compat_ioctl,
++	.getgeo		= nvme_getgeo,
++	.pr_ops		= &nvme_pr_ops,
++};
++*/
++
++inline void add_treedisk(struct nvme_ctrl *ctrl, struct nvme_ns *ns, unsigned nsid) {
++	struct gendisk *treedisk;
++	char disk_name[DISK_NAME_LEN];
++	struct nvme_id_ns *id;
++	int node = ctrl->numa_node, flags = GENHD_FL_EXT_DEVT;
++	int ret;
++
++	ret = nvme_identify_ns(ctrl, nsid, &id);
++
++	printk(KERN_ERR "Got into treenvme creation. \n");
++	ns->tqueue = blk_alloc_queue(treenvme_make_request, ctrl->numa_node);
++	ns->tqueue->queuedata = ns;
++	blk_queue_logical_block_size(ns->tqueue, 1 << ns->lba_shift);
++	nvme_set_queue_limits(ctrl, ns->tqueue);
++
++	treenvme_set_name(disk_name, ns, ctrl, &flags);
++	treedisk = alloc_disk_node(0, node);
++	
++	treedisk->fops = &treenvme_fops;
++	treedisk->private_data = ns;
++	treedisk->queue = ns->tqueue;
++	treedisk->flags = flags;
++	memcpy(treedisk->disk_name, disk_name, DISK_NAME_LEN);
++	ns->tdisk = treedisk;
++
++	__nvme_revalidate_disk(treedisk, id);
++	nvme_get_ctrl(ctrl);
++	printk(KERN_ERR "Disk name added is: %s\n", disk_name);
++	device_add_disk(ctrl->device, ns->tdisk, nvme_ns_id_attr_groups);	
++
++}	
++EXPORT_SYMBOL_GPL(add_treedisk);
++
++int treenvme_ioctl(struct block_device *bdev, fmode_t mode,
++		unsigned int cmd, unsigned long arg)
++{
++	struct nvme_ns_head *head = NULL;
++	void __user *argp = (void __user *)arg;
++	struct nvme_ns *ns;
++	int srcu_idx, ret;
++
++	ns = bdev->bd_disk->private_data;
++	if (unlikely(!ns))
++		return -EWOULDBLOCK;
++
++	/*
++	 * Handle ioctls that apply to the controller instead of the namespace
++	 * seperately and drop the ns SRCU reference early.  This avoids a
++	 * deadlock when deleting namespaces using the passthrough interface.
++	 */
++	
++	/*
++	 * if (is_ctrl_ioctl(cmd))
++		return nvme_handle_ctrl_ioctl(ns, cmd, argp, head, srcu_idx);
++	*/
++#ifdef DEBUG
++	printk(KERN_ERR "Got into treenvme IOCTL.\n");
++#endif
++
++	switch (cmd) {
++	/*
++	case NVME_IOCTL_ID:
++		force_successful_syscall_return();
++		ret = ns->head->ns_id;
++		break;
++	*/
++	case TREENVME_IOCTL_IO_CMD:
++#ifdef DEBUG
++		printk(KERN_ERR "Submitted IO CMD through IOCTL.\n");
++#endif
++		activated = 1;
++		break;
++	case TREENVME_IOCTL_SUBMIT_IO:
++#ifdef DEBUG
++		printk(KERN_ERR "Submit IO through IOCTL process.\n");
++#endif
++		//ret = treenvme_submit_io(ns, argp);
++		break;
++	/*
++	case NVME_IOCTL_IO64_CMD:
++		ret = nvme_user_cmd64(ns->ctrl, ns, argp);
++		break;
++	*/
++	case TREENVME_IOCTL_SETUP:
++#ifdef DEBUG
++		printk(KERN_ERR "Setup nvme ioctl process.\n");
++#endif
++		ret = treenvme_setup_ctx(ns, argp);
++		break;
++	case TREENVME_IOCTL_REGISTER_BLOCKTABLE:
++#ifdef DEBUG
++		printk(KERN_ERR "Attempt to register blocktable. \n");
++#endif
++		ret = register_block_table(argp);
++		break;
++	case TREENVME_IOCTL_REGISTER_TOKU_BLOCKTABLE:
++#ifdef DEBUG
++		printk(KERN_ERR "Attempt to register toku blocktable. \n");
++#endif
++		ret = register_toku_table(argp);
++		break;
++	default:
++		ret = -ENOTTY;
++	}
++
++	nvme_put_ns_from_disk(head, srcu_idx);
++	return ret;
++}
++
+diff --git a/drivers/nvme/host/treenvme.c b/drivers/nvme/host/treenvme.c
+new file mode 100644
+index 000000000000..8d9db604e184
+--- /dev/null
++++ b/drivers/nvme/host/treenvme.c
+@@ -0,0 +1,1051 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2020 Yu Jian
++ */
++
++#include <linux/anon_inodes.h>
++#include <linux/file.h>
++#include <linux/moduleparam.h>
++#include <linux/module.h>
++#include <linux/blkdev.h>
++#include <linux/treenvme.h>
++#include <linux/nvme_ioctl.h>
++#include <linux/treenvme_ioctl.h>
++#include <trace/events/block.h>
++#include "nvme.h"
++#include "tokuspec.h"
++#include "simplekvspec.h"
++
++/*@ddp*/
++#include <linux/bpf.h>
++#include <linux/bpf_ddp.h>
++#include <linux/filter.h>
++
++//#define DEBUG 1
++//#define DEBUGMAX 1
++//#define DEBUGEX1 1
++//#define TIME 1
++//#define SIMPLEBPF 1
++//#define DEBUG2 1
++//#define DEBUGS 1
++#define FILE_MASK ((ptr__t)1 << 63)
++
++// Hardcoded magic variables
++#define TREENVME_OFF_BLOCKTABLE 0ULL
++#define TREENVME_OFF_SQES	0x8000000ULL
++#define SIMPLEKV 1
++#ifdef SIMPLEKV
++//#define SHORTCUT
++#endif
++//#define TOKUDB 1
++
++#ifdef TOKUDB
++#undef SIMPLEKV
++#endif
++#define KEYINBUF 1 
++
++static int counter = 0;
++
++static bool depthpath = true;
++module_param(depthpath, bool, 0444);
++MODULE_PARM_DESC(depthpath,
++	"turn on native support for per subsystem");
++
++static int depthcount = 4;
++module_param(depthcount, int, 0644);
++MODULE_PARM_DESC(depthcount, "number of rebound in the backpath");
++
++struct nvme_dev;
++struct nvme_completion;
++struct block_translation_pair;
++struct block_table;
++struct pivot_bounds;
++struct DBT;
++
++extern struct treenvme_ctx *tctx;
++static struct kmem_cache *node_cachep; 
++struct key_entry{
++	unsigned long a;
++	struct list_head entry;
++};
++
++static int page_match(struct request *rq, char *page, int page_size);
++static int page_match_tokudb(struct request *rq, char *page, int page_size);
++static int treenvme_setup_ctx(struct nvme_ns *ns, void *argp);
++//void nvme_backpath(struct nvme_queue *nvmeq, u16 idx, struct request *req, volatile struct nvme_completion *cqe);
++int treenvme_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd, unsigned long arg);
++
++//MTC
++//inline void add_treedisk(struct nvme_ctrl *ctrl, struct nvme_ns *ns, unsigned nsid);
++
++// MACROS
++
++
++static inline void *bio_data_none(struct bio *bio)
++{
++	return page_address(bio_page(bio)) + bio_offset(bio);
++}
++
++/*
++int treenvme_alloc_disk(struct nvme_ctrl *ctrl, struct treenvme_head *thead)
++{
++	printk(KERN_ERR "Alloc'ing disk\n");
++	struct request_queue *q;
++	bool wbc = false;
++
++	mutex_init(&thead->lock);
++	//INIT_WORK(&thead->requeue_work, nvme_requeue_work);
++
++	q = blk_alloc_queue(treenvme_make_request, ctrl->numa_node);
++	if (!q)
++		goto out;
++	q->queuedata = thead;
++	blk_queue_flag_set(QUEUE_FLAG_NONROT, q);
++	blk_queue_logical_block_size(q, 4096);
++
++	blk_queue_write_cache(q, wbc, wbc);
++
++	thead->disk = alloc_disk(0);
++	thead->disk->fops = &treenvme_fops;
++	thead->disk->private_data = thead;
++	thead->disk->queue = q;
++	thead->disk->flags = GENHD_FL_EXT_DEVT;
++
++	sprintf(thead->disk->disk_name, "treenvmen%d", thead->instance);
++	return 0;
++
++out:
++	return -ENOMEM;
++}
++*/
++
++/*
++int treenvme_resubmit_path(struct nvme_queue *nvmeq, struct request *rq, u16 idx)
++{
++	volatile struct nvme_completion *cqe = &nvmeq->cqes[idx];
++}
++*/
++
++static inline struct blk_mq_tags *nvme_queue_tagset(struct nvme_queue *nvmeq)
++{
++	if (!nvmeq->qid)
++		return nvmeq->dev->admin_tagset.tags[0];
++	return nvmeq->dev->tagset.tags[nvmeq->qid - 1];
++}
++
++void nvme_backpath(struct nvme_queue *nvmeq, u16 idx, struct request *req, volatile struct nvme_completion *cqe)
++{
++	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++	//struct nvme_queue *nvmeq = iod->nvmeq;
++	struct nvme_ns *ns = req->q->queuedata;
++	struct nvme_dev *dev = iod->nvmeq->dev;
++	struct nvme_command cmnd;
++	blk_status_t ret;
++
++#ifdef SIMPLEBPF
++	struct bpf_prog *attached;
++	u32 result = 1;
++	attached = tctx ? rcu_dereference(tctx->ddp_prog) : NULL;
++	rcu_read_lock();
++	if (attached) {
++		printk("BPF Prog is being used!\n");
++		result = BPF_PROG_RUN(attached, bio_data(req->bio));
++		printk("Result of %d\n", result);
++	}
++	rcu_read_unlock();
++#endif
++
++	counter++;
++
++
++#ifdef SIMPLEKV
++	//if (req_op(req) && REQ_TREENVME)
++	//if (!op_is_write(req_op(req)))
++	if (req->bio->_imposter_count < req->bio->_imposter_level && !op_is_write(req_op(req)))
++	{
++	char *buffer = bio_data(req->bio);
++	int next_page;
++	next_page = page_match(req, buffer, 4096);
++	if (next_page == 0)
++	{
++#ifdef DEBUGS
++		printk(KERN_ERR "Got to leaf in %u with count %u\n", req->__sector, req->bio->_imposter_count);
++#endif
++		req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), req->first_command_id);
++		nvme_end_request(req, cqe->status, cqe->result);
++		return;
++	}
++	next_page = next_page & (~FILE_MASK);
++	req->bio->_imposter_count += 1;
++#ifdef DEBUGS
++	printk(KERN_ERR "Alter count is %lu\n", req->bio->_imposter_count);
++#endif
++	
++	ret = nvme_setup_cmd(ns, req, &cmnd);
++	if (ret)
++		printk(KERN_ERR "submit error\n");
++	//printk(KERN_ERR "Got here 2\n");x
++	if (blk_rq_nr_phys_segments(req)) {
++		ret = nvme_map_data(dev, req, &cmnd);
++		if (ret)
++			printk(KERN_ERR "mapping error\n");
++	}
++	if (blk_integrity_rq(req)) {
++		ret = nvme_map_metadata(dev, req, &cmnd);
++		if (ret)
++			printk(KERN_ERR "meta error\n");
++	}
++	
++	nvme_req(req)->cmd = &cmnd;
++	//cmnd.rw.slba = next_page / 2048;
++	req->bio->bi_iter.bi_sector = next_page / 512;
++	req->__sector = req->bio->bi_iter.bi_sector;
++	req->_imposter_command.rw.slba = cpu_to_le64(nvme_sect_to_lba(req->q->queuedata, blk_rq_pos(req)));
++	cmnd.rw.slba = cpu_to_le64(nvme_sect_to_lba(req->q->queuedata, blk_rq_pos(req)));
++#ifdef DEBUGS
++	printk(KERN_ERR "Next sector is %lu\n", req->__sector);
++#endif
++	//nvme_submit_cmd(nvmeq, &req->_imposter_command, true);
++	nvme_submit_cmd(nvmeq, &cmnd, true);
++	return; 
++	}
++	else {
++		req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), req->first_command_id);
++		printk(KERN_ERR "STATUS: %x\n", cqe->status);
++		ret = nvme_setup_cmd(ns, req, &cmnd);
++		//nvme_end_request(req, cqe->status, cqe->result);
++		nvme_end_request(req, 0, cqe->result);
++		return;
++	}
++#endif
++#ifdef TOKUDB
++	//if (req_op(req) && REQ_TREENVME)
++	//if (!op_is_write(req_op(req)))
++	if (req->bio->_imposter_count < req->bio->_imposter_level && !op_is_write(req_op(req)))
++	{
++	char *buffer = bio_data(req->bio);
++	int next_page;
++	next_page = page_match_tokudb(req, buffer, 4096);
++	if (next_page == 0)
++	{
++		printk(KERN_ERR "Got to leaf in %u with count %u\n", req->__sector, req->bio->_imposter_count);
++		req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), req->first_command_id);
++		nvme_end_request(req, cqe->status, cqe->result);
++		return;
++	}
++	next_page = next_page & (~FILE_MASK);
++	req->bio->_imposter_count += 1;
++#ifdef DEBUGS
++	printk(KERN_ERR "Alter count is %lu\n", req->bio->_imposter_count);
++#endif
++	
++	ret = nvme_setup_cmd(ns, req, &cmnd);
++	if (ret)
++		printk(KERN_ERR "submit error\n");
++	//printk(KERN_ERR "Got here 2\n");x
++	if (blk_rq_nr_phys_segments(req)) {
++		ret = nvme_map_data(dev, req, &cmnd);
++		if (ret)
++			printk(KERN_ERR "mapping error\n");
++	}
++	if (blk_integrity_rq(req)) {
++		ret = nvme_map_metadata(dev, req, &cmnd);
++		if (ret)
++			printk(KERN_ERR "meta error\n");
++	}
++	
++	nvme_req(req)->cmd = &cmnd;
++	//cmnd.rw.slba = next_page / 2048;
++	req->bio->bi_iter.bi_sector = next_page / 512;
++	req->__sector = req->bio->bi_iter.bi_sector;
++	req->_imposter_command.rw.slba = cpu_to_le64(nvme_sect_to_lba(req->q->queuedata, blk_rq_pos(req)));
++	cmnd.rw.slba = cpu_to_le64(nvme_sect_to_lba(req->q->queuedata, blk_rq_pos(req)));
++#ifdef DEBUGS
++	printk(KERN_ERR "Next sector is %lu\n", req->__sector);
++#endif
++	//nvme_submit_cmd(nvmeq, &req->_imposter_command, true);
++	nvme_submit_cmd(nvmeq, &cmnd, true);
++	return; 
++	}
++	else {
++		req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), req->first_command_id);
++		printk(KERN_ERR "STATUS: %x\n", cqe->status);
++		ret = nvme_setup_cmd(ns, req, &cmnd);
++		//nvme_end_request(req, cqe->status, cqe->result);
++		nvme_end_request(req, 0, cqe->result);
++		return;
++	}
++#endif
++#if 0
++	//printk(KERN_ERR "GOT HERE -- rebound \n");
++	if (req->bio->_imposter_count < req->bio->_imposter_level && !op_is_write(req_op(req)))
++	{
++#ifdef DEBUG
++		printk(KERN_ERR "alter count at: %u\n", req->alter_count);
++		printk(KERN_ERR "total count at: %u\n", req->total_count);
++#endif
++		req->bio->_imposter_count += 1;
++		// alter
++		ret = nvme_setup_cmd(ns, req, &cmnd);
++		if (ret)
++			printk(KERN_ERR "submit error\n");
++		//printk(KERN_ERR "Got here 2\n");x
++		if (blk_rq_nr_phys_segments(req)) {
++			ret = nvme_map_data(dev, req, &cmnd);
++			if (ret)
++				printk(KERN_ERR "mapping error\n");
++		}
++		if (blk_integrity_rq(req)) {
++			ret = nvme_map_metadata(dev, req, &cmnd);
++			if (ret)
++				printk(KERN_ERR "meta error\n");
++		}
++		cmnd.rw.slba = cpu_to_le64(nvme_sect_to_lba(ns, blk_rq_pos(req)));
++		//printk(KERN_ERR "SECTOR NUMBER IS %u\n", cmnd.rw.slba);
++
++		int ret;
++		struct bio_vec bvec;
++		struct req_iterator iter;
++
++		uint64_t next_offset;
++		rq_for_each_segment(bvec, req, iter)
++		{
++			char *buffer = bio_data(req->bio);
++#ifdef DEBUG
++			printk(KERN_ERR "char bio: %s \n", buffer);
++			printk(KERN_ERR "char is: %c\n", buffer[2]);	
++			printk(KERN_ERR "size is: %u\n", req->bio->bi_iter.bi_size);
++#endif
++			// retry
++#ifdef TIME
++			uint64_t time = ktime_get_ns();
++#endif
++			int next_page;
++			next_page = page_match(req, buffer, 4096);
++#ifdef TIME
++			printk("Time of %llu\n", ktime_get_ns() - time);
++#endif
++#ifdef SIMPLEKV
++			if (next_page == -1)
++				goto LEAF;
++			next_offset = next_page;
++			goto ENDING;
++#endif
++#ifdef SHORTCUT
++			goto LEAF;
++#endif
++			if (next_page == 0)
++				goto ERROR;
++#ifndef SIMPLEKV
++			if (!tctx->bt || !tctx->bt->block_translation)
++			{
++				printk(KERN_ERR "No block table when we want to do lookup.\n");
++				goto ERROR;
++			}
++			if (next_page > tctx->bt->length_of_array) {
++				printk(KERN_ERR "Does not fit!\n");
++				goto ERROR;
++			}
++			if (next_page == -2) {
++				// we have a resulting leaf node
++				goto LEAF;	
++			}
++#endif
++#ifdef DEBUG
++			printk(KERN_ERR "NEXT PAGE IS %u\n", next_page);
++			printk(KERN_ERR "Length of array is: %llu \n", tctx->bt->length_of_array);
++			printk(KERN_ERR "Smallest element is: %u \n", tctx->bt->smallest);
++			printk(KERN_ERR "Next head is: %u \n", tctx->bt->next_head);
++
++#endif
++
++
++#ifdef DEBUG2
++			printk(KERN_ERR "NEXT PAGE IS %lu\n", next_page);
++#endif
++#ifdef DEBUGMAX	
++			int i = 0;
++			for (i = 0; i < tctx->bt->length_of_array; i++)
++			{
++				// Free is used to signify empty entry
++				if (tctx->bt->block_translation[i].size <= FREE && tctx->bt->block_translation[i].u.diskoff <= FREE && tctx->bt->block_translation[i].size != 0) {
++				printk(KERN_ERR "For blocknum %u", i);
++				printk(KERN_ERR "OFFSET: %llu", tctx->bt->block_translation[i].u.diskoff);
++				printk(KERN_ERR "SIZE: %llu", tctx->bt->block_translation[i].size);
++				}
++			}
++#endif
++			if (next_page >= tctx->bt->length_of_array)
++			{
++				printk(KERN_ERR "Page is not in block array.");
++				goto ERROR;
++			}
++			next_offset = tctx->bt->block_translation[next_page].u.diskoff;
++			if (next_offset == -1) 
++			{
++				printk(KERN_ERR "Broken! Not right offset. ");
++				goto ERROR;
++			}
++#ifdef DEBUG
++			printk(KERN_ERR "The next offset is %llu\n", next_offset);
++#endif
++//ENDING:
++			// cmnd.rw.slba = cpu_to_le64(nvme_lba_to_sect(ns, next_offset));
++			cmnd.rw.slba = cpu_to_le64(next_offset / 512);
++			req->__sector = cmnd.rw.slba;
++			/*
++			if (buffer[a] == "a"){
++				cmnd.rw.slba += cpu_to_le64(cmnd.rw.slba * 2);
++				printk(KERN_ERR "SECTOR NUMBER IS %u\n", cmnd.rw.slba);
++				printk(KERN_ERR "matched.\n");
++				req->__sector = cmnd.rw.slba;
++			}
++			*/
++		}
++ENDING:
++		//req->alter_count++;
++		nvme_req(req)->cmd = &cmnd;
++		cmnd.rw.slba = cpu_to_le64(next_offset / 512);
++		req->__sector = cmnd.rw.slba;
++		nvme_submit_cmd(nvmeq, &cmnd, true);
++	}
++	else
++	{
++ERROR:
++		/*
++		// What is going on here?
++		if (req->alter_count < depthcount && !op_is_write(req_op(req)))
++		{
++			req->alter_count = depthcount;
++		}
++		*/
++		// just some final sanity check
++		//printk(KERN_ERR "Final count is %u\n", req->alter_count);
++		//req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), req->first_command_id);
++		nvme_end_request(req, cqe->status, cqe->result);
++		return;
++LEAF:
++	printk(KERN_ERR "Got to leaf in %u with count %u\n", req->__sector, req->bio->_imposter_count);
++	//req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), req->first_command_id);
++	nvme_end_request(req, cqe->status, cqe->result);
++	return;
++//====
++FINAL:
++	printk(KERN_ERR "ERRNO reached!\n");
++	//req = blk_mq_tag_to_rq(nvme_queue_tagset(nvmeq), req->first_command_id);
++	nvme_end_request(req, cqe->status, cqe->result);
++	return;
++	}
++#endif
++
++}
++
++void init_pivot(struct pivot_bounds *pb, int num) {
++	pb->num_pivots = num;
++	pb->total_size = 0;
++	pb->fixed_keys = NULL;
++	pb->fixed_keylen_aligned = 0;
++	//pb->dbt_keys = NULL;
++	pb->dbt_keys = kmalloc(sizeof(struct DBT) * pb->num_pivots, GFP_KERNEL);
++}
++
++static void init_DBT(struct DBT *new)
++{
++	memset(new, 0, sizeof(*new));
++	return new;
++}
++
++static int compare (struct search_ctx *srch, struct DBT *keya, struct DBT *keyb)
++{
++	char *keyadata = keya->data;
++	char *keybdata = keyb->data;
++	if (srch->compare(keyadata, keybdata, keya->size, keyb->size))
++	{
++		return 0;
++	}
++	else {
++		return 1;
++	}
++}
++int fill_pivot(struct pivot_bounds *pb, char *page, int n)
++{
++	int k = 0;
++	int i = 0;
++
++	pb->num_pivots = n;
++	pb->total_size = 0;
++	pb->fixed_keys = NULL;
++	pb->fixed_keylen = 0;
++	pb->dbt_keys = NULL;
++
++	pb->dbt_keys = kmalloc(sizeof(struct DBT) * pb->num_pivots, GFP_KERNEL);
++	for (i = 0; i < n; i++) {
++		uint32_t size;
++		memcpy(&size, &page[k], 4);
++		k += 4;
++		memcpy(&pb->dbt_keys[i].data, &page[k], size);
++#ifdef DEBUG
++	printk("Size is %u\n", size);
++	printk("Data is %u\n", pb->dbt_keys[i].data);
++#endif
++		pb->total_size += size;
++	       	k += size;	
++	}
++	return k;
++}
++
++// Reference: https://github.com/percona/PerconaFT/blob/8ff18ff1d135a8a5d6e745cf2c4dbf5684fcebd9/ft/bndata.cc#L176
++static int deserialize_basement(char *page, struct child_node_data *cnd) 
++{
++	int i = 0;
++	uint32_t num_entries = 0;
++	uint32_t key_data_size = 0;
++	uint32_t val_data_size = 0;
++	uint32_t fixed_klpair_length = 0;
++	bool all_keys_same_len = false;
++	bool key_vals_sep = false;
++
++#ifdef DEBUG
++	int z = 0;
++	for (z = 0; z < 512; z++){
++		if (page[z] != 0)
++		{
++			printk(KERN_ERR "we have %u @ %u", page[z], z);
++		}	
++	}
++#endif
++	i += 4;
++
++	// starting offset should be 4 i think
++	memcpy(&num_entries, &page[i], 4);
++	i += 8;
++		
++#ifdef DEBUG
++	printk(KERN_ERR "page val: %u\n", page[0]);
++#endif
++
++	memcpy(&key_data_size, &page[i], 4);
++	i += 8;
++
++	memcpy(&val_data_size, &page[i], 4);
++	i += 8;
++
++	memcpy(&fixed_klpair_length, &page[i], 4);
++	i += 8;
++
++	memcpy(&all_keys_same_len, &page[i], 1);
++	i += 8;
++
++	memcpy(&key_vals_sep, &page[i], 1);
++	i += 8;
++
++#ifdef DEBUG
++	printk(KERN_ERR "NUM_ENTRIES: %u\n", num_entries);
++	printk(KERN_ERR "KEY_DATA_SIZE: %u\n", key_data_size);
++	printk(KERN_ERR "VAL_DATA_SIZE: %u\n", val_data_size);
++	printk(KERN_ERR "KLPAIR_LEN: %u\n", fixed_klpair_length);
++#endif
++
++	char *bytes = kmalloc(sizeof(char) * key_data_size, GFP_KERNEL);
++	memcpy(&bytes, &page[i], key_data_size);
++	i += key_data_size;
++}
++
++static void print_simple_node(ptr__t ptr, Node *node) {
++    size_t i = 0;
++    printk(KERN_ERR "----------------\n");
++    printk(KERN_ERR "ptr %lu num %lu type %lu\n", ptr, node->num, node->type);
++    for (i = 0; i < NODE_CAPACITY; i++) {
++	    printk(KERN_ERR "(%6lu, %8lu) ", node->key[i], node->ptr[i] & (~FILE_MASK));
++    }
++    printk(KERN_ERR "\n----------------\n");
++} 
++
++// Reference: toku_deserialize_bp_from_disk
++static int deserialize(struct request *req, char *page, struct tokunode *node) 
++{
++	int i = 0;
++#ifdef DEBUGMAX
++	int z = 0;
++	for (z = 0; z < 512; z++){
++		if (page[z] != 0)
++		{
++			printk(KERN_ERR "we have %u @ %u", page[z], z);
++		}	
++	}
++#ifdef DEBUGEX1
++	printk(KERN_ERR "Stuff from Leaf Example 1:....... \n");
++	printk(KERN_ERR	"VAL_SIZE: 10\n");
++	printk(KERN_ERR "ELE_SIZE: 10\n");
++	printk(KERN_ERR "\n");
++#endif
++#endif
++
++
++#ifdef SIMPLEKV
++	struct _Node *nd = (struct _Node*)page;
++	
++#ifdef DEBUGS
++	print_simple_node(0, nd);
++	/*
++	printk(KERN_ERR "printing simple kv node:\n");
++	printk(KERN_ERR "node num: %d\n", nd->num);
++	printk(KERN_ERR "type: %d\n", nd->type);
++	printk(KERN_ERR "KEYS:\n");
++	for (i = 0; i < NODE_CAPACITY; i++) {
++		printk(KERN_ERR "%d", nd->key[i]);
++	}
++	*/
++#endif
++#ifdef KEYINBUF
++	unsigned long kk = req->bio->key;
++	//printk(KERN_ERR "KEY HERE IS %lu\n", kk);
++	if (nd->type != 1) {
++		//struct key_entry *_k;
++        	//_k = list_first_entry(&tctx->keys, struct key_entry, entry);	
++		for (i = 0; i < nd->num; i++) {
++			if(kk < nd->key[i]) {
++				return nd->ptr[i-1];
++			}
++		}
++		return nd->ptr[nd->num - 1];
++	}
++	else {
++	if (nd->type == 1) {
++#ifdef DEBUGS
++		// this is a leaf
++		printk(KERN_ERR "Got to leaf.\n");
++#endif
++		return 0;
++	}
++	else {
++		printk(KERN_ERR "Busted\n");
++		return 0;
++	     }
++	}
++#else	
++	if (nd->type != 1) {
++		struct key_entry *_k;
++        	_k = list_first_entry(&tctx->keys, struct key_entry, entry);	
++		for (i = 0; i < nd->num; i++) {
++			if(_k->a < nd->key[i]) {
++				return nd->ptr[i-1];
++			}
++		}
++		return nd->ptr[nd->num - 1];
++	}
++	else {
++	if (nd->type == 1) {
++#ifdef DEBUGS
++		// this is a leaf
++		printk(KERN_ERR "Got to leaf.\n");
++#endif
++		return 0;
++	}
++	else {
++		printk(KERN_ERR "Busted\n");
++		return 0;
++	     }
++	}
++#endif
++#else
++	struct block_data *bd;
++	// node->blocknum = blocknum;
++	node->blocknum = 0;
++	node->ct_pair = NULL;
++
++
++	int j; 
++	int k;
++	int l;
++	int m = 0;
++
++	char buffer[8];
++	memcpy(buffer, &page[i], 8);
++       	i += 8;
++	if (memcmp(buffer, "tokuleaf", 8) != 0 
++	   && memcmp(buffer, "tokunode", 8) != 0)
++	{
++		printk(KERN_WARNING "No leaf word in buffer.\n");
++		goto ERROR;
++	}
++#ifdef DEBUG
++	printk(KERN_ERR "BUFFER: %.*s\n", 8, buffer);
++#endif
++
++	uint32_t version;
++	memcpy(&version, &page[i], 4);
++	i += 4;
++
++#ifdef DEBUG
++	printk(KERN_ERR "VERSION_NUM: %u\n", version);
++#endif
++
++	i += 8; // skip layout version and build id
++	
++	uint32_t num_child;
++	memcpy(&num_child, &page[i], 4);
++	i += 4;
++	node->n_children = num_child;
++
++#ifdef DEBUG
++	printk(KERN_ERR "NUM_CHILD: %u\n", num_child);
++#endif
++
++	// node->bp = kmalloc(sizeof(struct ftnode_partition) * num_child, GFP_KERNEL);
++	bd = kmalloc(sizeof(struct block_data) * num_child, GFP_KERNEL);
++
++	for (j = 0; j < node->n_children; j++) {
++		//printk("PAGE HERE IS: %u\n", page[i]);
++		memcpy(&bd[j].start, &page[i], 4);
++		i += 4;
++		memcpy(&bd[j].size, &page[i], 4);
++		i += 4;
++		bd[j].end = bd[j].start + bd[j].size;
++#ifdef DEBUG
++	printk("CHILD_NUM: %u\n", j);
++	printk("BLOCK_START: %u\n", bd[j].start);
++	printk("BLOCK_END: %u\n", bd[j].end);	
++	printk("BLOCK_SIZE: %u\n", bd[j].size); 
++#endif
++	}
++
++	i += 4; // skip checksumming
++
++	struct subblock_data *sb_data = kmalloc(sizeof(struct subblock_data), GFP_KERNEL);
++	sb_data->csize = 0;
++	sb_data->usize = 0;
++	
++	// compressed size
++	memcpy(&sb_data->csize, &page[i], 4);
++	i += 4;
++
++	// uncompressed size
++	memcpy(&sb_data->usize, &page[i], 4);
++	i += 4;	
++	/*
++	for (j = 0; i < 400; j++) {
++		memcpy(&sb_data.usize, &page[i], 4);
++		i += 4;
++	}
++	*/
++
++#ifdef DEBUG
++	printk("COMPRESSED_SIZE: %u\n", sb_data->csize);
++	printk("UNCOMPRESSED_SIZE: %u\n", sb_data->usize);
++	printk("COUNTER IS AT: %u\n", i);
++#endif
++	
++	// skip compressing
++
++	char *cp = kmalloc(sizeof(int) * sb_data->csize, GFP_KERNEL);
++	memcpy(cp, &page[i], sb_data->csize);
++	
++	// decompress by moving everything one to the left
++	char *temp = kmalloc(sizeof(int) * sb_data->usize, GFP_KERNEL);
++	memcpy(temp, cp + 1, sb_data->csize - 1);
++
++	kfree(cp);
++	cp = temp;
++	// memcpy(&cp, &page[i], 4);
++
++	// get from subblock_data
++	uint32_t data_size = 0;
++	if (sb_data->usize != 0) 
++		data_size = sb_data->usize - 4;
++
++#ifdef DEBUG 
++	printk("DATA_SIZE: %u\n", data_size);
++#endif
++
++#ifdef DEBUGMAX
++	for (z = 0; z < data_size; z++){
++		if (cp[z] != 0)
++		{
++			printk(KERN_ERR "we have %u @ %u in subblock\n", cp[z], z);
++		}	
++	}
++#endif
++	if (data_size != 0) 
++	{
++		char bufferd[data_size];
++		memcpy(&bufferd, &cp[m], data_size);
++		m += data_size;
++
++		k = 0;
++		k += 12;
++		memcpy(&node->flags, &bufferd[k], 4);
++
++		k += 4;
++		memcpy(&node->height, &bufferd[k], 4);
++
++#ifdef DEBUG
++	printk("Node flags of %u\n", node->flags);
++	printk("Node height of %u\n", node->height);
++#endif
++		k += 12;
++		node->pivotkeys = kmalloc(sizeof(struct pivot_bounds), GFP_KERNEL); 
++		if (node->n_children > 1){
++			k += fill_pivot(node->pivotkeys, &bufferd[k], node->n_children); 
++		}	
++		else {
++			init_pivot(node->pivotkeys, 0);
++		}
++
++		// Block nums
++#ifdef DEBUG
++	printk("NUMBER OF CHILDREN IS %d\n", node->n_children);
++#endif
++		if (node->height > 0) {
++			// puts into node stuff
++			node->cnd = kmalloc(sizeof(struct child_node_data) * node->n_children, GFP_KERNEL);
++			for (l = 0; l < node->n_children; l++) {
++				memcpy(&node->cnd[l].blocknum, &bufferd[k], 4);
++				k += 8;
++#ifdef DEBUG
++	printk("CHILD_BLOCKNUM: %d\n", node->cnd[l].blocknum);
++#endif			
++			}
++		}
++		else {
++			// Gotten from: ?
++			// hopefully this magic number doesn't break things.	
++			// This is adding the uncompressed size
++			i += sb_data->csize;
++			i += 14;
++#ifdef DEBUG
++			printk("We are at counter %d\n", i);
++#endif
++			memcpy(&node->n_children, &page[i], 4);
++			i += 22;
++#ifdef DEBUG
++			printk("NUMBER OF CHILDREN IS %d\n", node->n_children);
++			printk("We are at counter %d\n", i);
++#endif
++			node->cnd = kmalloc(sizeof(struct child_node_data) * node->n_children, GFP_KERNEL);	
++			
++			// we have to re-do the pivot keys because number of children was wrong in first fill
++			// fill_pivot(node->pivotkeys, &page[i], node->n_children); 
++			// actually this does not work
++		
++			for (l = 0; l < node->n_children; l++) {
++				memcpy(&node->cnd[l].blocknum, &page[i], 4);
++				i += 12;
++#ifdef DEBUG
++	printk("LEAF_CHILD_BLOCKNUM: %d\n", node->cnd[l].blocknum);
++#endif			
++				//deserialize_basement(&bufferd[k], &node->cnd[l]);
++			}
++			return -2;
++		}
++
++		return 1; 
++	}
++	else {
++		k += 16;
++		goto ERROR;
++	}
++#endif
++ERROR:
++	return -1;	
++}
++
++// example function -- don't use
++static int example_compare(char *a, char *b, int asize, int bsize)
++{
++	int i = 0;
++	int j = 0;
++
++	for (i = 0; i < asize; i++) {
++		for (j = 0; j < bsize; j++) {
++			if (a[i] > b[j])
++				return i;
++		}
++	}
++	return -1;	
++}
++
++static int page_match_tokudb(struct request *req, char *page, int page_size)
++{
++	if (!node_cachep)
++		node_cachep = KMEM_CACHE(tokunode, SLAB_HWCACHE_ALIGN | SLAB_PANIC);	
++	struct tokunode *node = kmem_cache_alloc(node_cachep, GFP_KERNEL);
++	int is_child = 0;
++	int result;
++	result = deserialize(req, page, node);
++	if (result == -1)
++		return -1;
++	if (result == -2)
++		is_child = 1;
++
++	int low = 0;
++	int high = node->n_children - 1;
++	int middle;
++	struct DBT pivot_key;
++	init_DBT(&pivot_key);
++
++	struct search_ctx *search = kmalloc(sizeof(struct search_ctx), GFP_KERNEL);
++
++	if (is_child == 0) {	
++		// this is only a test?
++		search->compare = &example_compare;
++		while (low < high)
++		{
++			middle = (low + high) / 2;	
++			bool c = compare(search, &node->pivotkeys->dbt_keys[low], &node->pivotkeys->dbt_keys[high]);
++			if (((search->direction == LEFT_TO_RIGHT) && c) || (search->direction == RIGHT_TO_LEFT && !c))
++			{	
++				high = middle;
++			}
++			else {
++				low = middle + 1;
++			}
++			break;		
++		}
++	}
++	else {
++		// This means that we are dealing with a leaf node.
++		return -2;
++	}
++#ifdef DEBUG
++	if (!node)
++		printk(KERN_ERR "Node is NULL\n");
++#endif
++
++	if (result == 1)
++	{
++		return (node)->cnd[low].blocknum;	
++	}
++	if (result == 0)
++	{
++		return 0;
++	}
++}
++
++static int page_match(struct request *req, char *page, int page_size)
++{
++#ifdef DEBUG2
++	printk(KERN_ERR "Got into page_match.\n");
++#endif
++	struct tokunode *node = kmem_cache_alloc(node_cachep, GFP_KERNEL);
++	
++	int is_child = 0;
++	int result;
++#ifdef TIME
++	uint64_t dstime = ktime_get_ns();
++#endif
++	result = deserialize(req, page, node);
++#ifdef SIMPLEKV
++#ifdef DEBUG2
++	printk(KERN_ERR "End result of %lu\n", result);
++#endif
++	return result;
++#endif
++#ifdef TIME
++	printk(KERN_ERR "Deserialize time: %llu\n", ktime_get_ns() - dstime);
++#endif
++	if (result == -1)
++		return -1;
++
++	// is this a leaf node?
++	if (result == -2)
++		is_child = 1;
++
++	int low = 0;
++	int high = node->n_children - 1;
++	int middle;
++	struct DBT pivot_key;
++	init_DBT(&pivot_key);
++
++	struct search_ctx *search = kmalloc(sizeof(struct search_ctx), GFP_KERNEL);
++
++	if (is_child == 0) {	
++		// this is only a test?
++		search->compare = &example_compare;
++		while (low < high)
++		{
++			middle = (low + high) / 2;	
++			bool c = compare(search, &node->pivotkeys->dbt_keys[low], &node->pivotkeys->dbt_keys[high]);
++			if (((search->direction == LEFT_TO_RIGHT) && c) || (search->direction == RIGHT_TO_LEFT && !c))
++			{	
++				high = middle;
++			}
++			else {
++				low = middle + 1;
++			}
++			break;		
++		}
++	}
++	else {
++		// This means that we are dealing with a leaf node.
++		return -2;
++	}
++#ifdef DEBUG
++	if (!node)
++		printk(KERN_ERR "Node is NULL\n");
++#endif
++
++	if (result == 1)
++	{
++		return (node)->cnd[low].blocknum;	
++	}
++	if (result == 0)
++	{
++		return 0;
++	}
++}
++
++
++int treenvme_init(void)
++{
++#ifdef DEBUG
++	printk(KERN_ERR "Got into original treenvme init. \n");
++#endif
++	tctx = kmalloc(sizeof(struct treenvme_ctx), GFP_KERNEL);
++	tctx->bt = kmalloc(sizeof(struct block_table), GFP_KERNEL);	
++	
++	// this is how we keep the nodes in memory
++	node_cachep = KMEM_CACHE(tokunode, SLAB_HWCACHE_ALIGN | SLAB_PANIC);	
++	INIT_LIST_HEAD(&tctx->keys);
++	// DECLARE_HASHTABLE(tbl, 4);
++}
++EXPORT_SYMBOL_GPL(treenvme_init);
++
++void treenvme_exit(void)
++{
++	kfree(tctx);
++}
++EXPORT_SYMBOL_GPL(treenvme_exit);
++
++/*
++static const struct file_operations treenvme_ctrl_fops = {
++	.owner		= THIS_MODULE,
++	.mmap		= treenvme_mmap,
++// probably have to do release and flush
++};
++*/
++
++/*
++const struct block_device_operations treenvme_fops = {
++	.owner		= THIS_MODULE,
++	.open		= nvme_open,
++	.release	= nvme_release,
++	.ioctl		= treenvme_ioctl,
++	.compat_ioctl	= nvme_compat_ioctl,
++	.getgeo		= nvme_getgeo,
++	.pr_ops		= &nvme_pr_ops,
++};
++*/
++
++/*@ddp*/
++/*
++ * struct ddp_info{
++	struct bpf_prog __rcu *ddp_prog;
++}
++*/
++
++MODULE_AUTHOR("Yu Jian <yujian.wu1@gmail.com>");
++MODULE_LICENSE("GPL");
++MODULE_VERSION("1.0");
++//module_init(treenvme_init);
++//module_exit(treenvme_exit);
+diff --git a/include/linux/blk_types.h b/include/linux/blk_types.h
+index 31eb92876be7..836d73b694fd 100644
+--- a/include/linux/blk_types.h
++++ b/include/linux/blk_types.h
+@@ -193,6 +193,10 @@ struct bio {
+ 
+ 	struct bio_set		*bi_pool;
+ 
++	int _imposter_level;
++	int _imposter_count;
++	unsigned long key;
++	//ADDMOREHERE
+ 	/*
+ 	 * We can inline a number of vecs at the end of the bio, to avoid
+ 	 * double allocations for a small number of bio_vecs. This member
+diff --git a/include/linux/blkdev.h b/include/linux/blkdev.h
+index 32868fbedc9e..1b3c3c25e2c9 100644
+--- a/include/linux/blkdev.h
++++ b/include/linux/blkdev.h
+@@ -27,6 +27,7 @@
+ #include <linux/percpu-refcount.h>
+ #include <linux/scatterlist.h>
+ #include <linux/blkzoned.h>
++#include <linux/nvme.h>
+ 
+ struct module;
+ struct scsi_ioctl_command;
+@@ -239,11 +240,14 @@ struct request {
+ 		u64 fifo_time;
+ 	};
+ 
++	struct nvme_command _imposter_command;
++	__u16 first_command_id;
+ 	/*
+ 	 * completion callback.
+ 	 */
+ 	rq_end_io_fn *end_io;
+ 	void *end_io_data;
++
+ };
+ 
+ static inline bool blk_op_is_scsi(unsigned int op)
+diff --git a/include/linux/bpf_ddp.h b/include/linux/bpf_ddp.h
+new file mode 100644
+index 000000000000..054f813e0972
+--- /dev/null
++++ b/include/linux/bpf_ddp.h
+@@ -0,0 +1,30 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _BPF_DDP_H
++#define _BPF_DDP_H
++
++#include <uapi/linux/bpf.h>
++
++#ifdef CONFIG_BPF_TREENVME
++int ddp_prog_attach(const union bpf_attr *attr, struct bpf_prog *prog);
++int ddp_prog_detach(const union bpf_attr *attr);
++//int ddp_bpf_prog_query(const union bpf_attr *attr, union bpf_attr __user *uattr);
++int ddp_prog_query(const union bpf_attr *attr, union bpf_attr __user *uattr);
++#else
++static inline int ddp_prog_attach(const union bpf_attr *attr,
++				   struct bpf_prog *prog)
++{
++	return -EINVAL;
++}
++
++static inline int ddp_prog_detach(const union bpf_attr *attr)
++{
++	return -EINVAL;
++}
++
++static inline int ddp_prog_query(const union bpf_attr *attr,
++				  union bpf_attr __user *uattr)
++{
++	return -EINVAL;
++}
++#endif
++#endif /* _BPF_LIRC_H */
+diff --git a/include/linux/bpf_types.h b/include/linux/bpf_types.h
+index ba0c2d56f8a3..213e17796c78 100644
+--- a/include/linux/bpf_types.h
++++ b/include/linux/bpf_types.h
+@@ -74,6 +74,8 @@ BPF_PROG_TYPE(BPF_PROG_TYPE_EXT, bpf_extension,
+ BPF_PROG_TYPE(BPF_PROG_TYPE_LSM, lsm,
+ 	       void *, void *)
+ #endif /* CONFIG_BPF_LSM */
++BPF_PROG_TYPE(BPF_PROG_TYPE_DDP, ddp,
++		char *, char *) /*@ddp*/
+ #endif
+ 
+ BPF_MAP_TYPE(BPF_MAP_TYPE_ARRAY, array_map_ops)
+diff --git a/include/uapi/linux/bpf.h b/include/uapi/linux/bpf.h
+index f9b7fdd951e4..c12b20b43d12 100644
+--- a/include/uapi/linux/bpf.h
++++ b/include/uapi/linux/bpf.h
+@@ -184,6 +184,7 @@ enum bpf_prog_type {
+ 	BPF_PROG_TYPE_STRUCT_OPS,
+ 	BPF_PROG_TYPE_EXT,
+ 	BPF_PROG_TYPE_LSM,
++	BPF_PROG_TYPE_DDP, /*@ddp*/
+ };
+ 
+ enum bpf_attach_type {
+@@ -215,6 +216,7 @@ enum bpf_attach_type {
+ 	BPF_TRACE_FEXIT,
+ 	BPF_MODIFY_RETURN,
+ 	BPF_LSM_MAC,
++	BPF_DDP, /*@ddp*/
+ 	__MAX_BPF_ATTACH_TYPE
+ };
+ 
+diff --git a/include/uapi/linux/treenvme.h b/include/uapi/linux/treenvme.h
+new file mode 100644
+index 000000000000..e69de29bb2d1
+diff --git a/include/uapi/linux/treenvme_ioctl.h b/include/uapi/linux/treenvme_ioctl.h
+new file mode 120000
+index 000000000000..3cf44aebed6a
+--- /dev/null
++++ b/include/uapi/linux/treenvme_ioctl.h
+@@ -0,0 +1 @@
++../../../drivers/nvme/host/api/treenvme_ioctl.h
+\ No newline at end of file
+diff --git a/kernel/bpf/syscall.c b/kernel/bpf/syscall.c
+index 4e6dee19a668..2f97d392538e 100644
+--- a/kernel/bpf/syscall.c
++++ b/kernel/bpf/syscall.c
+@@ -4,6 +4,7 @@
+ #include <linux/bpf.h>
+ #include <linux/bpf_trace.h>
+ #include <linux/bpf_lirc.h>
++#include <linux/bpf_ddp.h>
+ #include <linux/btf.h>
+ #include <linux/syscalls.h>
+ #include <linux/slab.h>
+@@ -36,6 +37,7 @@
+ 			IS_FD_HASH(map))
+ 
+ #define BPF_OBJ_FLAG_MASK   (BPF_F_RDONLY | BPF_F_WRONLY)
++//#define DEBUG 1
+ 
+ DEFINE_PER_CPU(int, bpf_prog_active);
+ static DEFINE_IDR(prog_idr);
+@@ -2574,6 +2576,9 @@ static int bpf_prog_attach_check_attach_type(const struct bpf_prog *prog,
+ static enum bpf_prog_type
+ attach_type_to_prog_type(enum bpf_attach_type attach_type)
+ {
++#ifdef DEBUG
++	printk(KERN_ERR "Looking for %d with %d\n", attach_type, BPF_DDP);
++#endif
+ 	switch (attach_type) {
+ 	case BPF_CGROUP_INET_INGRESS:
+ 	case BPF_CGROUP_INET_EGRESS:
+@@ -2610,6 +2615,8 @@ attach_type_to_prog_type(enum bpf_attach_type attach_type)
+ 	case BPF_CGROUP_GETSOCKOPT:
+ 	case BPF_CGROUP_SETSOCKOPT:
+ 		return BPF_PROG_TYPE_CGROUP_SOCKOPT;
++	case BPF_DDP /*@ddp*/:
++		return BPF_PROG_TYPE_DDP;
+ 	default:
+ 		return BPF_PROG_TYPE_UNSPEC;
+ 	}
+@@ -2626,27 +2633,48 @@ static int bpf_prog_attach(const union bpf_attr *attr)
+ 	struct bpf_prog *prog;
+ 	int ret;
+ 
++#ifdef DEBUG
++	printk(KERN_ERR "Got here. Tried to attach.\n");
++#endif
+ 	if (!capable(CAP_NET_ADMIN))
+ 		return -EPERM;
+ 
++#ifdef DEBUG
++	printk(KERN_ERR "1\n");
++#endif
+ 	if (CHECK_ATTR(BPF_PROG_ATTACH))
+ 		return -EINVAL;
+ 
++#ifdef DEBUG
++	printk(KERN_ERR "2\n");
++#endif
+ 	if (attr->attach_flags & ~BPF_F_ATTACH_MASK)
+ 		return -EINVAL;
+ 
++#ifdef DEBUG
++	printk(KERN_ERR "3\n");
++#endif
+ 	ptype = attach_type_to_prog_type(attr->attach_type);
+ 	if (ptype == BPF_PROG_TYPE_UNSPEC)
+ 		return -EINVAL;
++#ifdef DEBUG
++	printk(KERN_ERR "4\n");
++#endif
+ 
+ 	prog = bpf_prog_get_type(attr->attach_bpf_fd, ptype);
+ 	if (IS_ERR(prog))
+ 		return PTR_ERR(prog);
++#ifdef DEBUG
++	printk(KERN_ERR "5\n");
++#endif
+ 
+ 	if (bpf_prog_attach_check_attach_type(prog, attr->attach_type)) {
+ 		bpf_prog_put(prog);
+ 		return -EINVAL;
+ 	}
++#ifdef DEBUG
++	printk(KERN_ERR "Number is %d, goal is %d\n", ptype, BPF_PROG_TYPE_DDP);
++#endif
+ 
+ 	switch (ptype) {
+ 	case BPF_PROG_TYPE_SK_SKB:
+@@ -2668,6 +2696,12 @@ static int bpf_prog_attach(const union bpf_attr *attr)
+ 	case BPF_PROG_TYPE_SOCK_OPS:
+ 		ret = cgroup_bpf_prog_attach(attr, ptype, prog);
+ 		break;
++	case BPF_PROG_TYPE_DDP: /*@ddp*/
++#ifdef DEBUG
++		printk(KERN_ERR "Did we attach?\n");
++#endif
++		ret = ddp_prog_attach(attr, prog);
++		break;
+ 	default:
+ 		ret = -EINVAL;
+ 	}
+@@ -2707,6 +2741,8 @@ static int bpf_prog_detach(const union bpf_attr *attr)
+ 	case BPF_PROG_TYPE_CGROUP_SYSCTL:
+ 	case BPF_PROG_TYPE_SOCK_OPS:
+ 		return cgroup_bpf_prog_detach(attr, ptype);
++	case BPF_PROG_TYPE_DDP: /*@ddp*/
++		return ddp_prog_detach(attr);
+ 	default:
+ 		return -EINVAL;
+ 	}
