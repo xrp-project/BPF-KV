@@ -9,7 +9,7 @@
 int get_handler(int flag) {
     int fd = open(DB_PATH, flag | O_DIRECT, 0755);
     if (fd < 0) {
-        printf("Fail to open file %s!\n", DB_PATH);
+        SPDK_NOTICELOG("Fail to open file %s!\n", DB_PATH);
         exit(0);
     }
     return fd;
@@ -32,7 +32,7 @@ void initialize(size_t layer_num, int mode) {
     max_key = layer_cap[layer_num - 1] * NODE_CAPACITY;
     cache_cap = 0;
 
-    printf("%lu blocks in total, max key is %lu\n", total_node, max_key);
+    SPDK_NOTICELOG("%lu blocks in total, max key is %lu\n", total_node, max_key);
 }
 
 void build_cache(size_t layer_num) {
@@ -59,11 +59,11 @@ void build_cache(size_t layer_num) {
     }
 
     cache_cap = entry_num; // enable the cache
-    printf("Cache built. %lu layers %lu entries in total.\n", layer_num, entry_num);
+    SPDK_NOTICELOG("Cache built. %lu layers %lu entries in total.\n", layer_num, entry_num);
 }
 
 int terminate() {
-    printf("Done!\n");
+    SPDK_NOTICELOG("Done!\n");
     free(layer_cap);
     free(cache);
     close(db);
@@ -72,76 +72,80 @@ int terminate() {
 
 int compare_nodes(Node *x, Node *y) {
     if (x->num != y->num) {
-        printf("num differs %lu %lu\n", x->num, y->num);
+        SPDK_NOTICELOG("num differs %lu %lu\n", x->num, y->num);
         return 0;
     }
     if (x->type != y->type) {
-        printf("type differs %lu %lu\n", x->type, y->type);
+        SPDK_NOTICELOG("type differs %lu %lu\n", x->type, y->type);
         return 0;
     }
     for (size_t i = 0; i < x->num; i++)
         if (x->key[i] != y->key[i] || x->ptr[i] != y->ptr[i]) {
-            printf("bucket %lu differs x.key %lu y.key %lu x.ptr %lu y.ptr %lu\n",
+            SPDK_NOTICELOG("bucket %lu differs x.key %lu y.key %lu x.ptr %lu y.ptr %lu\n",
                     i, x->key[i], y->key[i], x->ptr[i], y->ptr[i]);
             return 0;
         }
     return 1;
 }
 
-int load(size_t layer_num) {
-    printf("Load the database of %lu layers\n", layer_num);
-    initialize(layer_num, LOAD_MODE);
+// int load(size_t layer_num) {
+int load(void *argv) {
+    size_t layer_num = atoi(((char **)argv)[2]);
+    SPDK_NOTICELOG("Load: %lu layers\n", layer_num);
+    spdk_app_stop(0);
 
-    // 1. Load the index
-    Node *node, *tmp;
-    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
-    ptr__t next_pos = 1, tmp_ptr = 0;
-    for (size_t i = 0; i < layer_num; i++) {
-        size_t extent = max_key / layer_cap[i], start_key = 0;
-        printf("layer %lu extent %lu\n", i, extent);
-        for (size_t j = 0; j < layer_cap[i]; j++) {
-            node->num = NODE_CAPACITY;
-            node->type = (i == layer_num - 1) ? LEAF : INTERNAL;
-            size_t sub_extent = extent / node->num;
-            for (size_t k = 0; k < node->num; k++) {
-                node->key[k] = start_key + k * sub_extent;
-                node->ptr[k] = node->type == INTERNAL ? 
-                              encode(next_pos   * BLK_SIZE) :
-                              encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
-                next_pos++;
-            }
-            write(db, node, sizeof(Node));
-            start_key += extent;
+    // initialize(layer_num, LOAD_MODE);
 
-            // Sanity check
-            // read_node(tmp_ptr, &tmp);
-            // compare_nodes(&node, &tmp);
-            // tmp_ptr += BLK_SIZE;
-        }
-    }
+    // // 1. Load the index
+    // Node *node, *tmp;
+    // if (posix_memalign((void **)&node, 512, sizeof(Node))) {
+    //     perror("posix_memalign failed");
+    //     exit(1);
+    // }
+    // ptr__t next_pos = 1, tmp_ptr = 0;
+    // for (size_t i = 0; i < layer_num; i++) {
+    //     size_t extent = max_key / layer_cap[i], start_key = 0;
+    //     SPDK_NOTICELOG("layer %lu extent %lu\n", i, extent);
+    //     for (size_t j = 0; j < layer_cap[i]; j++) {
+    //         node->num = NODE_CAPACITY;
+    //         node->type = (i == layer_num - 1) ? LEAF : INTERNAL;
+    //         size_t sub_extent = extent / node->num;
+    //         for (size_t k = 0; k < node->num; k++) {
+    //             node->key[k] = start_key + k * sub_extent;
+    //             node->ptr[k] = node->type == INTERNAL ? 
+    //                           encode(next_pos   * BLK_SIZE) :
+    //                           encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
+    //             next_pos++;
+    //         }
+    //         write(db, node, sizeof(Node));
+    //         start_key += extent;
 
-    // 2. Load the value log
-    Log *log;
-    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
-    for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
-        for (size_t j = 0; j < LOG_CAPACITY; j++) {
-            sprintf(log->val[j], "%63lu", i + j);
-        }
-        write(db, log, sizeof(Log));
+    //         // Sanity check
+    //         // read_node(tmp_ptr, &tmp);
+    //         // compare_nodes(&node, &tmp);
+    //         // tmp_ptr += BLK_SIZE;
+    //     }
+    // }
 
-        // Sanity check
-        // read_log((total_node + i / LOG_CAPACITY) * BLK_SIZE, &log);
-    }
+    // // 2. Load the value log
+    // Log *log;
+    // if (posix_memalign((void **)&log, 512, sizeof(Log))) {
+    //     perror("posix_memalign failed");
+    //     exit(1);
+    // }
+    // for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
+    //     for (size_t j = 0; j < LOG_CAPACITY; j++) {
+    //         sSPDK_NOTICELOG(log->val[j], "%63lu", i + j);
+    //     }
+    //     write(db, log, sizeof(Log));
 
-    free(log);
-    free(node);
-    return terminate();
+    //     // Sanity check
+    //     // read_log((total_node + i / LOG_CAPACITY) * BLK_SIZE, &log);
+    // }
+
+    // free(log);
+    // free(node);
+    // return terminate();
 }
 
 void initialize_workers(WorkerArg *args, size_t total_op_count) {
@@ -166,31 +170,38 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
     }
 }
 
-int run(size_t layer_num, size_t request_num, size_t thread_num) {
-    printf("Run the test of %lu requests\n", request_num);
-    initialize(layer_num, RUN_MODE);
-    build_cache(layer_num > 3 ? 3 : layer_num);
+// int run(size_t layer_num, size_t request_num, size_t thread_num) {
+int run(void *argv) {
+    // run(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
+    size_t layer_num   = atoi(((char **)argv)[2]);
+    size_t request_num = atoi(((char **)argv)[3]);
+    size_t thread_num  = atoi(((char **)argv)[4]);
+    SPDK_NOTICELOG("Run: %lu layers, %lu requests, and %lu threads\n", 
+                    layer_num, request_num, thread_num);
+    spdk_app_stop(0);
+    // initialize(layer_num, RUN_MODE);
+    // build_cache(layer_num > 3 ? 3 : layer_num);
 
-    worker_num = thread_num;
-    struct timeval start, end;
-    pthread_t tids[worker_num];
-    WorkerArg args[worker_num];
+    // worker_num = thread_num;
+    // struct timeval start, end;
+    // pthread_t tids[worker_num];
+    // WorkerArg args[worker_num];
 
-    initialize_workers(args, request_num);
+    // initialize_workers(args, request_num);
 
-    gettimeofday(&start, NULL);
-    start_workers(tids, args);
-    terminate_workers(tids, args);
-    gettimeofday(&end, NULL);
+    // gettimeofday(&start, NULL);
+    // start_workers(tids, args);
+    // terminate_workers(tids, args);
+    // gettimeofday(&end, NULL);
 
-    long total_latency = 0;
-    for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
-    long run_time = 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
+    // long total_latency = 0;
+    // for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
+    // long run_time = 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
 
-    printf("Average throughput: %f op/s latency: %f usec\n", 
-            (double)request_num / run_time * 1000000, (double)total_latency / request_num);
+    // SPDK_NOTICELOG("Average throughput: %f op/s latency: %f usec\n", 
+    //         (double)request_num / run_time * 1000000, (double)total_latency / request_num);
 
-    return terminate();
+    // return terminate();
 }
 
 void *subtask(void *args) {
@@ -198,7 +209,7 @@ void *subtask(void *args) {
     struct timeval start, end;
 
     srand(r->index);
-    printf("thread %ld op_count %ld\n", r->index, r->op_count);
+    SPDK_NOTICELOG("thread %ld op_count %ld\n", r->index, r->op_count);
     for (size_t i = 0; i < r->op_count; i++) {
         key__t key = rand() % max_key;
         val__t val;
@@ -209,7 +220,7 @@ void *subtask(void *args) {
         r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
 
         if (key != atoi(val)) {
-            printf("Error! key: %lu val: %s thrd: %ld\n", key, val, r->index);
+            SPDK_NOTICELOG("Error! key: %lu val: %s thrd: %ld\n", key, val, r->index);
         }       
     }
 }
@@ -238,21 +249,21 @@ int get(key__t key, val__t val, int db_handler) {
 }
 
 void print_node(ptr__t ptr, Node *node) {
-    printf("----------------\n");
-    printf("ptr %lu num %lu type %lu\n", ptr, node->num, node->type);
+    SPDK_NOTICELOG("----------------\n");
+    SPDK_NOTICELOG("ptr %lu num %lu type %lu\n", ptr, node->num, node->type);
     for (size_t i = 0; i < NODE_CAPACITY; i++) {
-        printf("(%6lu, %8lu) ", node->key[i], node->ptr[i]);
+        SPDK_NOTICELOG("(%6lu, %8lu) ", node->key[i], node->ptr[i]);
     }
-    printf("\n----------------\n");
+    SPDK_NOTICELOG("\n----------------\n");
 }
 
 void print_log(ptr__t ptr, Log *log) {
-    printf("----------------\n");
-    printf("ptr %lu\n", ptr);
+    SPDK_NOTICELOG("----------------\n");
+    SPDK_NOTICELOG("ptr %lu\n", ptr);
     for (size_t i = 0; i < LOG_CAPACITY; i++) {
-        printf("%s\n", log->val[i]);
+        SPDK_NOTICELOG("%s\n", log->val[i]);
     }
-    printf("\n----------------\n");
+    SPDK_NOTICELOG("\n----------------\n");
 }
 
 void read_node(ptr__t ptr, Node *node, int db_handler) {
@@ -298,24 +309,46 @@ ptr__t next_node(key__t key, Node *node) {
 }
 
 int prompt_help() {
-    printf("Usage: ./db --load number_of_layers\n");
-    printf("or     ./db --run number_of_layers number_of_requests number_of_threads\n");
+    SPDK_NOTICELOG("Usage: ./db --load number_of_layers\n");
+    SPDK_NOTICELOG("or     ./db --run number_of_layers number_of_requests number_of_threads\n");
     return 0;
 }
 
 int main(int argc, char *argv[]) {
+    struct spdk_app_opts opts = {};
+	int rc = 0;
+
+	/* Set default values in opts structure. */
+	spdk_app_opts_init(&opts, sizeof(opts));
+	opts.name = "simple_kv";
+
+	/*
+	 * spdk_app_start() will initialize the SPDK framework, call hello_start(),
+	 * and then block until spdk_app_stop() is called (or if an initialization
+	 * error occurs, spdk_app_start() will return with rc even without calling
+	 * hello_start().
+	 */
     if (argc < 3) {
-        return prompt_help(argc, argv);
+        prompt_help(argc, argv);
     } else if (strcmp(argv[1], "--load") == 0) {
-        return load(atoi(argv[2]));
+        // load(atoi(argv[2]));
+        rc = spdk_app_start(&opts, load, (void *)argv);
     } else if (strcmp(argv[1], "--run") == 0) {
         if (argc < 5) {
-            return prompt_help();
+            prompt_help();
+        } else {
+            // run(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
+            rc = spdk_app_start(&opts, run, (void *)argv);
         }
-        return run(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
     } else {
-        return prompt_help();
+        prompt_help();
     }
 
-    return 0;
+	if (rc) {
+		SPDK_ERRLOG("ERROR starting application\n");
+	}
+
+	/* Gracefully close out all of the SPDK subsystems. */
+	spdk_app_fini();
+	return rc;
 }

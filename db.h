@@ -1,10 +1,19 @@
 #ifndef DB_H
 #define DB_H
 
+#include <stdlib.h>
+#include <unistd.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <pthread.h>
 #include <sys/time.h>
+#include "spdk/stdinc.h"
+#include "spdk/thread.h"
+#include "spdk/bdev.h"
+#include "spdk/env.h"
+#include "spdk/event.h"
+#include "spdk/log.h"
+#include "spdk/string.h"
 
 // Data-level information
 typedef unsigned long meta__t;
@@ -39,6 +48,7 @@ typedef struct _Log {
 } Log;
 
 // Database-level information
+static char *bdev_name = "NVMe2n1";
 #define DB_PATH "./db.storage"
 #define LOAD_MODE 0
 #define RUN_MODE 1
@@ -51,6 +61,15 @@ key__t max_key;
 int db;
 Node *cache;
 size_t cache_cap;
+
+typedef struct {
+    Node *node;
+    Log  *log;
+	struct spdk_bdev *bdev;
+	struct spdk_bdev_desc *bdev_desc;
+	struct spdk_io_channel *bdev_io_channel;
+	struct spdk_bdev_io_wait_entry bdev_io_wait;
+} Context;
 
 typedef struct {
     size_t op_count;
@@ -73,9 +92,9 @@ ptr__t decode(ptr__t ptr) {
     return ptr & (~FILE_MASK);
 }
 
-int load(size_t layer_num);
+int load(void *argv);
 
-int run(size_t layer_num, size_t request_num, size_t thread_num);
+int run(void *argv);
 
 void *subtask(void *args);
 
