@@ -88,64 +88,174 @@ int compare_nodes(Node *x, Node *y) {
     return 1;
 }
 
+void bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *event_ctx) {
+	SPDK_NOTICELOG("Unsupported bdev event: type %d\n", type);
+}
+
+void init_context(Context *ctx) {
+	int rc = 0;
+	ctx->bdev = NULL;
+	ctx->bdev_desc = NULL;
+
+	SPDK_NOTICELOG("Opening the bdev %s\n", bdev_name);
+	rc = spdk_bdev_open_ext(bdev_name, true, bdev_event_cb, NULL, &ctx->bdev_desc);
+	if (rc) {
+		SPDK_ERRLOG("Could not open bdev: %s\n", bdev_name);
+		spdk_app_stop(-1);
+		return;
+	}
+
+	ctx->bdev = spdk_bdev_desc_get_bdev(ctx->bdev_desc);
+
+	SPDK_NOTICELOG("Opening io channel\n");
+	ctx->bdev_io_channel = spdk_bdev_get_io_channel(ctx->bdev_desc);
+	if (ctx->bdev_io_channel == NULL) {
+		SPDK_ERRLOG("Could not create bdev I/O channel!!\n");
+		spdk_bdev_close(ctx->bdev_desc);
+		spdk_app_stop(-1);
+		return;
+	}
+}
+
+void shallow_copy_ctx(Context *from, Context *to) {
+    to->bdev = from->bdev;
+    to->bdev_desc = from->bdev_desc;
+    to->bdev_io_channel = from->bdev_io_channel;
+    to->bdev_io_wait = from->bdev_io_wait;
+
+    u_int32_t buf_align = spdk_bdev_get_buf_align(to->bdev);
+	to->node = spdk_dma_zmalloc(sizeof(Node), buf_align, NULL);
+	to->log  = spdk_dma_zmalloc(sizeof(Log),  buf_align, NULL);
+
+    if (!to->node || !to->log) {
+		SPDK_ERRLOG("Failed to allocate memory\n");
+		spdk_put_io_channel(to->bdev_io_channel);
+		spdk_bdev_close(to->bdev_desc);
+		spdk_app_stop(-1);
+		return;
+	}
+}
+
+void write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg) {
+	Context *ctx = cb_arg;
+
+	// if (success) {
+	// 	SPDK_NOTICELOG("bdev io write completed successfully %lu\n", ctx->node->key[0]);
+	// } else {
+	// 	SPDK_ERRLOG("bdev io write error: %d\n", EIO);
+	// 	spdk_put_io_channel(ctx->bdev_io_channel);
+	// 	spdk_bdev_close(ctx->bdev_desc);
+	// 	spdk_app_stop(-1);
+	// 	return;
+	// }
+    
+	spdk_dma_free(ctx->node);
+	spdk_dma_free(ctx->log);
+
+	__atomic_fetch_add(ctx->counter, 1, __ATOMIC_SEQ_CST);
+
+	if (*(ctx->counter) == ctx->target) {
+		/* Complete the bdev io and close the channel */
+        free(ctx->counter);
+		spdk_bdev_free_io(bdev_io);
+		spdk_put_io_channel(ctx->bdev_io_channel);
+		spdk_bdev_close(ctx->bdev_desc);
+		SPDK_NOTICELOG("Stopping app\n");
+		spdk_app_stop(0);
+	} else {
+		SPDK_NOTICELOG("counter %d\n", *(ctx->counter));
+	}
+
+    free(ctx);
+}
+
+void ctx_write(void *arg) {
+    Context *ctx = arg;
+	int rc = spdk_bdev_write(ctx->bdev_desc, ctx->bdev_io_channel,
+             ctx->node, ctx->offset, sizeof(Node), write_complete, ctx);
+    if (rc == -ENOMEM) {
+        SPDK_NOTICELOG("Queueing io\n");
+        /* In case we cannot perform I/O now, queue I/O */
+        ctx->bdev_io_wait.bdev = ctx->bdev;
+        ctx->bdev_io_wait.cb_fn = ctx_write;
+        ctx->bdev_io_wait.cb_arg = ctx;
+        spdk_bdev_queue_io_wait(ctx->bdev, ctx->bdev_io_channel,
+                    &ctx->bdev_io_wait);
+    } else if (rc) {
+        SPDK_ERRLOG("%s error while writing to bdev: %d\n", spdk_strerror(-rc), rc);
+        spdk_put_io_channel(ctx->bdev_io_channel);
+        spdk_bdev_close(ctx->bdev_desc);
+        spdk_app_stop(-1);
+    }
+}
+
 // int load(size_t layer_num) {
 int load(void *argv) {
-    size_t layer_num = atoi(((char **)argv)[2]);
-    SPDK_NOTICELOG("Load: %lu layers\n", layer_num);
-    spdk_app_stop(0);
+    SPDK_NOTICELOG("Load: %lu layers\n", layer_cnt);
+    initialize(layer_cnt, LOAD_MODE);
 
-    // initialize(layer_num, LOAD_MODE);
+    // 1. Load the index
+    int rc = 0;
+    size_t idx = 0;
+    size_t target = total_node + max_key / LOG_CAPACITY;
+    size_t *counter = (size_t *)malloc(sizeof(size_t));
+    *counter = 0;
+    ptr__t next_pos = 1, tmp_ptr = 0;
 
-    // // 1. Load the index
-    // Node *node, *tmp;
-    // if (posix_memalign((void **)&node, 512, sizeof(Node))) {
-    //     perror("posix_memalign failed");
-    //     exit(1);
-    // }
-    // ptr__t next_pos = 1, tmp_ptr = 0;
-    // for (size_t i = 0; i < layer_num; i++) {
-    //     size_t extent = max_key / layer_cap[i], start_key = 0;
-    //     SPDK_NOTICELOG("layer %lu extent %lu\n", i, extent);
-    //     for (size_t j = 0; j < layer_cap[i]; j++) {
-    //         node->num = NODE_CAPACITY;
-    //         node->type = (i == layer_num - 1) ? LEAF : INTERNAL;
-    //         size_t sub_extent = extent / node->num;
-    //         for (size_t k = 0; k < node->num; k++) {
-    //             node->key[k] = start_key + k * sub_extent;
-    //             node->ptr[k] = node->type == INTERNAL ? 
-    //                           encode(next_pos   * BLK_SIZE) :
-    //                           encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
-    //             next_pos++;
-    //         }
-    //         write(db, node, sizeof(Node));
-    //         start_key += extent;
+    Context *root_ctx = (Context *)malloc(sizeof(Context));
+    init_context(root_ctx);
 
-    //         // Sanity check
-    //         // read_node(tmp_ptr, &tmp);
-    //         // compare_nodes(&node, &tmp);
-    //         // tmp_ptr += BLK_SIZE;
-    //     }
-    // }
+    for (size_t i = 0; i < layer_cnt; i++) {
+        size_t extent = max_key / layer_cap[i], start_key = 0;
+        SPDK_NOTICELOG("layer %lu extent %lu\n", i, extent);
+        for (size_t j = 0; j < layer_cap[i]; j++) {
+            Context *ctx = (Context *)malloc(sizeof(Context));
+            shallow_copy_ctx(root_ctx, ctx);
+            ctx->counter = counter;
+            ctx->target = target;
+            ctx->offset = sizeof(Node) * idx++;
+            ctx->node->num = NODE_CAPACITY;
+            ctx->node->type = (i == layer_cnt - 1) ? LEAF : INTERNAL;
+            size_t sub_extent = extent / ctx->node->num;
+            for (size_t k = 0; k < ctx->node->num; k++) {
+                ctx->node->key[k] = start_key + k * sub_extent;
+                ctx->node->ptr[k] = ctx->node->type == INTERNAL ? 
+                              encode(next_pos   * BLK_SIZE) :
+                              encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
+                next_pos++;
+            }
+            start_key += extent;
 
-    // // 2. Load the value log
-    // Log *log;
-    // if (posix_memalign((void **)&log, 512, sizeof(Log))) {
-    //     perror("posix_memalign failed");
-    //     exit(1);
-    // }
-    // for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
-    //     for (size_t j = 0; j < LOG_CAPACITY; j++) {
-    //         sSPDK_NOTICELOG(log->val[j], "%63lu", i + j);
-    //     }
-    //     write(db, log, sizeof(Log));
+            // write(db, node, sizeof(Node));
+            ctx_write(ctx);
 
-    //     // Sanity check
-    //     // read_log((total_node + i / LOG_CAPACITY) * BLK_SIZE, &log);
-    // }
+            // Sanity check
+            // read_node(tmp_ptr, &tmp);
+            // compare_nodes(&node, &tmp);
+            // tmp_ptr += BLK_SIZE;
+        }
+    }
 
-    // free(log);
-    // free(node);
+    // 2. Load the value log
+    for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
+        Context *ctx = (Context *)malloc(sizeof(Context));
+        shallow_copy_ctx(root_ctx, ctx);
+        ctx->counter = counter;
+        ctx->target = target;
+        ctx->offset = sizeof(Log) * idx++;
+        for (size_t j = 0; j < LOG_CAPACITY; j++) {
+            sprintf(ctx->log->val[j], "%63lu", i + j);
+        }
+        // write(db, log, sizeof(Log));
+        ctx_write(ctx);
+
+        // Sanity check
+        // read_log((total_node + i / LOG_CAPACITY) * BLK_SIZE, &log);
+    }
+
     // return terminate();
+	// SPDK_NOTICELOG("Calling spdk_app_stop\n");
+    // spdk_app_stop(0);
 }
 
 void initialize_workers(WorkerArg *args, size_t total_op_count) {
@@ -172,12 +282,8 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 
 // int run(size_t layer_num, size_t request_num, size_t thread_num) {
 int run(void *argv) {
-    // run(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
-    size_t layer_num   = atoi(((char **)argv)[2]);
-    size_t request_num = atoi(((char **)argv)[3]);
-    size_t thread_num  = atoi(((char **)argv)[4]);
     SPDK_NOTICELOG("Run: %lu layers, %lu requests, and %lu threads\n", 
-                    layer_num, request_num, thread_num);
+                    layer_cnt, request_cnt, thread_cnt);
     spdk_app_stop(0);
     // initialize(layer_num, RUN_MODE);
     // build_cache(layer_num > 3 ? 3 : layer_num);
@@ -308,10 +414,31 @@ ptr__t next_node(key__t key, Node *node) {
     return node->ptr[node->num - 1];
 }
 
-int prompt_help() {
-    SPDK_NOTICELOG("Usage: ./db --load number_of_layers\n");
-    SPDK_NOTICELOG("or     ./db --run number_of_layers number_of_requests number_of_threads\n");
-    return 0;
+void prompt_help(void) {
+    printf(" -M run or load\n");
+    printf(" -N number of layers\n");
+    printf(" -O number of requests\n");
+    printf(" -T number of threads\n");
+}
+
+int parse_arg(int ch, char *arg) {
+	switch (ch) {
+        case 'M':
+            db_mode = arg;
+            break;
+        case 'N':
+            layer_cnt = atoi(arg);
+            break;
+        case 'O':
+            request_cnt = atoi(arg);
+            break;
+        case 'T':
+            thread_cnt = atoi(arg);
+            break;
+        default:
+            return -EINVAL;
+	}
+	return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -322,24 +449,25 @@ int main(int argc, char *argv[]) {
 	spdk_app_opts_init(&opts, sizeof(opts));
 	opts.name = "simple_kv";
 
+    /*
+	 * Parse built-in SPDK command line parameters as well
+	 * as our custom one(s).
+	 */
+	if ((rc = spdk_app_parse_args(argc, argv, &opts, "M:N:O:T", NULL, parse_arg,
+				      prompt_help)) != SPDK_APP_PARSE_ARGS_SUCCESS) {
+		exit(rc);
+	}
+
 	/*
 	 * spdk_app_start() will initialize the SPDK framework, call hello_start(),
 	 * and then block until spdk_app_stop() is called (or if an initialization
 	 * error occurs, spdk_app_start() will return with rc even without calling
 	 * hello_start().
 	 */
-    if (argc < 3) {
-        prompt_help(argc, argv);
-    } else if (strcmp(argv[1], "--load") == 0) {
-        // load(atoi(argv[2]));
-        rc = spdk_app_start(&opts, load, (void *)argv);
-    } else if (strcmp(argv[1], "--run") == 0) {
-        if (argc < 5) {
-            prompt_help();
-        } else {
-            // run(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
-            rc = spdk_app_start(&opts, run, (void *)argv);
-        }
+    if (strcmp(db_mode, "load") == 0 && layer_cnt > 0) {
+        rc = spdk_app_start(&opts, load, NULL);
+    } else if (strcmp(db_mode, "run") == 0 && layer_cnt * request_cnt * thread_cnt > 0) {
+        rc = spdk_app_start(&opts, run, NULL);
     } else {
         prompt_help();
     }

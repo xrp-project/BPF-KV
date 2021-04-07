@@ -54,6 +54,11 @@ static char *bdev_name = "NVMe2n1";
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
 
+char*  db_mode = NULL;
+size_t layer_cnt   = 0;
+size_t request_cnt = 0;
+size_t thread_cnt  = 0;
+
 size_t worker_num;
 size_t total_node;
 size_t *layer_cap;
@@ -65,6 +70,9 @@ size_t cache_cap;
 typedef struct {
     Node *node;
     Log  *log;
+    size_t *counter;
+    size_t target;
+    uint64_t offset;
 	struct spdk_bdev *bdev;
 	struct spdk_bdev_desc *bdev_desc;
 	struct spdk_io_channel *bdev_io_channel;
@@ -110,7 +118,7 @@ void read_log(ptr__t ptr, Log *log, int db_handler);
 
 int retrieve_value(ptr__t ptr, val__t val, int db_handler);
 
-int prompt_help();
+void prompt_help(void);
 
 void initialize(size_t layer_num, int mode);
 
@@ -125,5 +133,17 @@ int terminate();
 int compare_nodes(Node *x, Node *y);
 
 void print_node(ptr__t ptr, Node *node);
+
+void init_context(Context *ctx);
+
+void shallow_copy_ctx(Context *from, Context *to);
+
+void bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *event_ctx);
+
+int parse_arg(int ch, char *arg);
+
+void write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg);
+
+void ctx_write(void *arg);
 
 #endif
