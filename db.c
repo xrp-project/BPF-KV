@@ -1,4 +1,5 @@
 #include "db.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -15,12 +16,59 @@ int get_handler(int flag) {
     return fd;
 }
 
+Context *init_context() {
+    Context *context = (Context *)malloc(sizeof(Context));
+
+    int rc = 0;
+	context->bdev = NULL;
+	context->bdev_desc = NULL;
+
+	SPDK_NOTICELOG("Opening the bdev %s\n", BDEV_NAME);
+	rc = spdk_bdev_open_ext(BDEV_NAME, true, bdev_event_cb, NULL, &context->bdev_desc);
+	if (rc) {
+		SPDK_ERRLOG("Could not open bdev: %s\n", BDEV_NAME);
+		spdk_app_stop(-1);
+		return;
+	}
+
+	context->bdev = spdk_bdev_desc_get_bdev(context->bdev_desc);
+
+	SPDK_NOTICELOG("Opening io channel\n");
+	context->bdev_io_channel = spdk_bdev_get_io_channel(context->bdev_desc);
+	if (context->bdev_io_channel == NULL) {
+		SPDK_ERRLOG("Could not create bdev I/O channel!!\n");
+		spdk_bdev_close(context->bdev_desc);
+		spdk_app_stop(-1);
+		return;
+	}
+
+    return context;
+}
+
+Request *init_request(size_t *c, size_t t, size_t o, Context *ctx) {
+    Request *req = (Request *)malloc(sizeof(Request));
+    
+    req->counter = c;
+    req->target = t;
+    req->offset = o;
+    req->context = ctx;
+
+    u_int32_t buff_align = spdk_bdev_get_buf_align(ctx->bdev);
+	req->buff = spdk_dma_zmalloc(BLK_SIZE, buff_align, NULL);
+
+    if (!req->buff) {
+		SPDK_ERRLOG("Failed to allocate memory\n");
+		spdk_put_io_channel(ctx->bdev_io_channel);
+		spdk_bdev_close(ctx->bdev_desc);
+		spdk_app_stop(-1);
+		return;
+	}
+
+    return req;
+}
+
 void initialize(size_t layer_num, int mode) {
-    if (mode == LOAD_MODE) {
-        db = get_handler(O_CREAT|O_TRUNC|O_WRONLY);
-    } else {
-        db = get_handler(O_RDONLY);
-    }
+    db_ctx = init_context();
     
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
     total_node = 1;
@@ -66,7 +114,7 @@ int terminate() {
     SPDK_NOTICELOG("Done!\n");
     free(layer_cap);
     free(cache);
-    close(db);
+    free(db_ctx);
     return 0;
 }
 
@@ -92,52 +140,8 @@ void bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void 
 	SPDK_NOTICELOG("Unsupported bdev event: type %d\n", type);
 }
 
-void init_context(Context *ctx) {
-	int rc = 0;
-	ctx->bdev = NULL;
-	ctx->bdev_desc = NULL;
-
-	SPDK_NOTICELOG("Opening the bdev %s\n", bdev_name);
-	rc = spdk_bdev_open_ext(bdev_name, true, bdev_event_cb, NULL, &ctx->bdev_desc);
-	if (rc) {
-		SPDK_ERRLOG("Could not open bdev: %s\n", bdev_name);
-		spdk_app_stop(-1);
-		return;
-	}
-
-	ctx->bdev = spdk_bdev_desc_get_bdev(ctx->bdev_desc);
-
-	SPDK_NOTICELOG("Opening io channel\n");
-	ctx->bdev_io_channel = spdk_bdev_get_io_channel(ctx->bdev_desc);
-	if (ctx->bdev_io_channel == NULL) {
-		SPDK_ERRLOG("Could not create bdev I/O channel!!\n");
-		spdk_bdev_close(ctx->bdev_desc);
-		spdk_app_stop(-1);
-		return;
-	}
-}
-
-void shallow_copy_ctx(Context *from, Context *to) {
-    to->bdev = from->bdev;
-    to->bdev_desc = from->bdev_desc;
-    to->bdev_io_channel = from->bdev_io_channel;
-    to->bdev_io_wait = from->bdev_io_wait;
-
-    u_int32_t buf_align = spdk_bdev_get_buf_align(to->bdev);
-	to->node = spdk_dma_zmalloc(sizeof(Node), buf_align, NULL);
-	to->log  = spdk_dma_zmalloc(sizeof(Log),  buf_align, NULL);
-
-    if (!to->node || !to->log) {
-		SPDK_ERRLOG("Failed to allocate memory\n");
-		spdk_put_io_channel(to->bdev_io_channel);
-		spdk_bdev_close(to->bdev_desc);
-		spdk_app_stop(-1);
-		return;
-	}
-}
-
 void write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg) {
-	Context *ctx = cb_arg;
+	Request *req = cb_arg;
 
 	// if (success) {
 	// 	SPDK_NOTICELOG("bdev io write completed successfully %lu\n", ctx->node->key[0]);
@@ -149,42 +153,41 @@ void write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg) {
 	// 	return;
 	// }
     
-	spdk_dma_free(ctx->node);
-	spdk_dma_free(ctx->log);
+	spdk_dma_free(req->buff);
 
-	__atomic_fetch_add(ctx->counter, 1, __ATOMIC_SEQ_CST);
+	__atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
 
-	if (*(ctx->counter) == ctx->target) {
+	if (*(req->counter) == req->target) {
 		/* Complete the bdev io and close the channel */
-        free(ctx->counter);
+        free(req->counter);
 		spdk_bdev_free_io(bdev_io);
-		spdk_put_io_channel(ctx->bdev_io_channel);
-		spdk_bdev_close(ctx->bdev_desc);
+		spdk_put_io_channel(req->context->bdev_io_channel);
+		spdk_bdev_close(req->context->bdev_desc);
 		SPDK_NOTICELOG("Stopping app\n");
 		spdk_app_stop(0);
 	} else {
-		SPDK_NOTICELOG("counter %d\n", *(ctx->counter));
+		SPDK_NOTICELOG("counter %d\n", *(req->counter));
 	}
 
-    free(ctx);
+    free(req);
 }
 
-void ctx_write(void *arg) {
-    Context *ctx = arg;
-	int rc = spdk_bdev_write(ctx->bdev_desc, ctx->bdev_io_channel,
-             ctx->node, ctx->offset, sizeof(Node), write_complete, ctx);
+void spdk_write(void *arg) {
+    Request *req = arg;
+	int rc = spdk_bdev_write(req->context->bdev_desc, req->context->bdev_io_channel,
+             req->buff, req->offset, BLK_SIZE, write_complete, req);
     if (rc == -ENOMEM) {
         SPDK_NOTICELOG("Queueing io\n");
         /* In case we cannot perform I/O now, queue I/O */
-        ctx->bdev_io_wait.bdev = ctx->bdev;
-        ctx->bdev_io_wait.cb_fn = ctx_write;
-        ctx->bdev_io_wait.cb_arg = ctx;
-        spdk_bdev_queue_io_wait(ctx->bdev, ctx->bdev_io_channel,
-                    &ctx->bdev_io_wait);
+        req->context->bdev_io_wait.bdev = req->context->bdev;
+        req->context->bdev_io_wait.cb_fn = spdk_write;
+        req->context->bdev_io_wait.cb_arg = req;
+        spdk_bdev_queue_io_wait(req->context->bdev, req->context->bdev_io_channel,
+                    &req->context->bdev_io_wait);
     } else if (rc) {
         SPDK_ERRLOG("%s error while writing to bdev: %d\n", spdk_strerror(-rc), rc);
-        spdk_put_io_channel(ctx->bdev_io_channel);
-        spdk_bdev_close(ctx->bdev_desc);
+        spdk_put_io_channel(req->context->bdev_io_channel);
+        spdk_bdev_close(req->context->bdev_desc);
         spdk_app_stop(-1);
     }
 }
@@ -197,37 +200,30 @@ int load(void *argv) {
     // 1. Load the index
     int rc = 0;
     size_t idx = 0;
-    size_t target = total_node + max_key / LOG_CAPACITY;
-    size_t *counter = (size_t *)malloc(sizeof(size_t));
-    *counter = 0;
+    size_t *counter = (size_t)malloc(sizeof(size_t));
+    size_t target = total_node + ceil((double)max_key / LOG_CAPACITY);
     ptr__t next_pos = 1, tmp_ptr = 0;
-
-    Context *root_ctx = (Context *)malloc(sizeof(Context));
-    init_context(root_ctx);
+    *counter = 0;
 
     for (size_t i = 0; i < layer_cnt; i++) {
         size_t extent = max_key / layer_cap[i], start_key = 0;
         SPDK_NOTICELOG("layer %lu extent %lu\n", i, extent);
         for (size_t j = 0; j < layer_cap[i]; j++) {
-            Context *ctx = (Context *)malloc(sizeof(Context));
-            shallow_copy_ctx(root_ctx, ctx);
-            ctx->counter = counter;
-            ctx->target = target;
-            ctx->offset = sizeof(Node) * idx++;
-            ctx->node->num = NODE_CAPACITY;
-            ctx->node->type = (i == layer_cnt - 1) ? LEAF : INTERNAL;
-            size_t sub_extent = extent / ctx->node->num;
-            for (size_t k = 0; k < ctx->node->num; k++) {
-                ctx->node->key[k] = start_key + k * sub_extent;
-                ctx->node->ptr[k] = ctx->node->type == INTERNAL ? 
+            Request *req = init_request(counter, target, sizeof(Node) * idx++, db_ctx);
+            Node *cur_node = (Node *)req->buff;
+            cur_node->num = NODE_CAPACITY;
+            cur_node->type = (i == layer_cnt - 1) ? LEAF : INTERNAL;
+            size_t sub_extent = extent / cur_node->num;
+            for (size_t k = 0; k < cur_node->num; k++) {
+                cur_node->key[k] = start_key + k * sub_extent;
+                cur_node->ptr[k] = cur_node->type == INTERNAL ? 
                               encode(next_pos   * BLK_SIZE) :
                               encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
                 next_pos++;
             }
             start_key += extent;
 
-            // write(db, node, sizeof(Node));
-            ctx_write(ctx);
+            spdk_write(req);
 
             // Sanity check
             // read_node(tmp_ptr, &tmp);
@@ -238,16 +234,13 @@ int load(void *argv) {
 
     // 2. Load the value log
     for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
-        Context *ctx = (Context *)malloc(sizeof(Context));
-        shallow_copy_ctx(root_ctx, ctx);
-        ctx->counter = counter;
-        ctx->target = target;
-        ctx->offset = sizeof(Log) * idx++;
+        Request *req = init_request(counter, target, sizeof(Log) * idx++, db_ctx);
+        Log *cur_log = (Log *)req->buff;
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
-            sprintf(ctx->log->val[j], "%63lu", i + j);
+            sprintf(cur_log->val[j], "%63lu", i + j);
         }
         // write(db, log, sizeof(Log));
-        ctx_write(ctx);
+        spdk_write(req);
 
         // Sanity check
         // read_log((total_node + i / LOG_CAPACITY) * BLK_SIZE, &log);

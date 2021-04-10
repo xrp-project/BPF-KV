@@ -48,7 +48,29 @@ typedef struct _Log {
 } Log;
 
 // Database-level information
-static char *bdev_name = "NVMe2n1";
+typedef struct {
+	struct spdk_bdev *bdev;
+	struct spdk_bdev_desc *bdev_desc;
+	struct spdk_io_channel *bdev_io_channel;
+	struct spdk_bdev_io_wait_entry bdev_io_wait;
+} Context;
+
+typedef struct {
+    void *buff;
+    size_t *counter;
+    size_t target;
+    uint64_t offset;
+    Context *context;
+} Request;
+
+typedef struct {
+    size_t op_count;
+    size_t index;
+    int db_handler;
+    size_t timer;
+} WorkerArg;
+
+#define BDEV_NAME "NVMe2n1"
 #define DB_PATH "./db.storage"
 #define LOAD_MODE 0
 #define RUN_MODE 1
@@ -64,29 +86,15 @@ size_t total_node;
 size_t *layer_cap;
 key__t max_key;
 int db;
+Context *db_ctx;
 Node *cache;
 size_t cache_cap;
 
-typedef struct {
-    Node *node;
-    Log  *log;
-    size_t *counter;
-    size_t target;
-    uint64_t offset;
-	struct spdk_bdev *bdev;
-	struct spdk_bdev_desc *bdev_desc;
-	struct spdk_io_channel *bdev_io_channel;
-	struct spdk_bdev_io_wait_entry bdev_io_wait;
-} Context;
-
-typedef struct {
-    size_t op_count;
-    size_t index;
-    int db_handler;
-    size_t timer;
-} WorkerArg;
-
 int get_handler(int flag);
+
+Context *init_context();
+
+Request *init_request(size_t *c, size_t t, size_t o, Context *ctx);
 
 ptr__t is_file_offset(ptr__t ptr) {
     return ptr & FILE_MASK;
@@ -134,16 +142,12 @@ int compare_nodes(Node *x, Node *y);
 
 void print_node(ptr__t ptr, Node *node);
 
-void init_context(Context *ctx);
-
-void shallow_copy_ctx(Context *from, Context *to);
-
 void bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *event_ctx);
 
 int parse_arg(int ch, char *arg);
 
 void write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg);
 
-void ctx_write(void *arg);
+void spdk_write(void *arg);
 
 #endif
