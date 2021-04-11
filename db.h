@@ -94,7 +94,7 @@ int get_handler(int flag);
 
 Context *init_context();
 
-Request *init_request(size_t *c, size_t t, size_t o, Context *ctx);
+Request *init_request(Context *ctx, size_t *c, size_t t, size_t o, void *b);
 
 ptr__t is_file_offset(ptr__t ptr) {
     return ptr & FILE_MASK;
@@ -120,9 +120,9 @@ int get(key__t key, val__t val, int db_handler);
 
 ptr__t next_node(key__t key, Node *node);
 
-void read_node(ptr__t ptr, Node *node, int db_handler);
+void read_node(ptr__t ptr, Node *node, Context *ctx, size_t *counter, size_t target);
 
-void read_log(ptr__t ptr, Log *log, int db_handler);
+void read_log(ptr__t ptr, Node *node, Context *ctx, size_t *counter, size_t target);
 
 int retrieve_value(ptr__t ptr, val__t val, int db_handler);
 
@@ -147,6 +147,8 @@ void bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void 
 int parse_arg(int ch, char *arg);
 
 void write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg);
+
+void read_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg);
 
 void spdk_write(void *arg);
 

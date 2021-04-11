@@ -45,7 +45,7 @@ Context *init_context() {
     return context;
 }
 
-Request *init_request(size_t *c, size_t t, size_t o, Context *ctx) {
+Request *init_request(Context *ctx, size_t *c, size_t t, size_t o, void *b) {
     Request *req = (Request *)malloc(sizeof(Request));
     
     req->counter = c;
@@ -53,16 +53,20 @@ Request *init_request(size_t *c, size_t t, size_t o, Context *ctx) {
     req->offset = o;
     req->context = ctx;
 
-    u_int32_t buff_align = spdk_bdev_get_buf_align(ctx->bdev);
-	req->buff = spdk_dma_zmalloc(BLK_SIZE, buff_align, NULL);
+    if (b == NULL) {
+        u_int32_t buff_align = spdk_bdev_get_buf_align(ctx->bdev);
+        req->buff = spdk_dma_zmalloc(BLK_SIZE, buff_align, NULL);
 
-    if (!req->buff) {
-		SPDK_ERRLOG("Failed to allocate memory\n");
-		spdk_put_io_channel(ctx->bdev_io_channel);
-		spdk_bdev_close(ctx->bdev_desc);
-		spdk_app_stop(-1);
-		return;
-	}
+        if (!req->buff) {
+            SPDK_ERRLOG("Failed to allocate memory\n");
+            spdk_put_io_channel(ctx->bdev_io_channel);
+            spdk_bdev_close(ctx->bdev_desc);
+            spdk_app_stop(-1);
+            return;
+        }
+    } else {
+        req->buff = b;
+    }
 
     return req;
 }
@@ -89,17 +93,27 @@ void build_cache(size_t layer_num) {
         entry_num += layer_cap[i];
     }
     
-    if (posix_memalign((void **)&cache, 512, entry_num * sizeof(Node))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
+    u_int32_t buff_align = spdk_bdev_get_buf_align(db_ctx->bdev);
+	cache = spdk_dma_zmalloc(entry_num * sizeof(Node), buff_align, NULL);
+
+    if (!cache) {
+		SPDK_ERRLOG("Failed to allocate memory\n");
+		spdk_put_io_channel(db_ctx->bdev_io_channel);
+		spdk_bdev_close(db_ctx->bdev_desc);
+		spdk_app_stop(-1);
+		return;
+	}
 
     size_t head = 0, tail = 1;
-    read_node(encode(0), &cache[head], db);
+    size_t counter = 0;
+    size_t target = entry_num;
+    SPDK_NOTICELOG("ptr %d %d\n", encode(0), 0);
+    read_node(encode(0), &cache[head], db_ctx, &counter, target);
 
     while (tail < entry_num) {
         for (size_t i = 0; i < cache[head].num; i++) {
-            read_node(cache[head].ptr[i], &cache[tail], db);
+            SPDK_NOTICELOG("head %lu i %lu ptr %d %d\n", head, i, cache[head].ptr[i], decode(cache[head].ptr[i]));
+            read_node(cache[head].ptr[i], &cache[tail], db_ctx, &counter, target);
             cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
             tail++;
         }
@@ -144,23 +158,16 @@ void write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg) {
 	Request *req = cb_arg;
 
 	// if (success) {
-	// 	SPDK_NOTICELOG("bdev io write completed successfully %lu\n", ctx->node->key[0]);
+	// 	SPDK_NOTICELOG("Read string from bdev : %s\n", req->buff);
 	// } else {
-	// 	SPDK_ERRLOG("bdev io write error: %d\n", EIO);
-	// 	spdk_put_io_channel(ctx->bdev_io_channel);
-	// 	spdk_bdev_close(ctx->bdev_desc);
-	// 	spdk_app_stop(-1);
-	// 	return;
+	// 	SPDK_ERRLOG("bdev io read error\n");
 	// }
     
-	spdk_dma_free(req->buff);
-
 	__atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
 
 	if (*(req->counter) == req->target) {
 		/* Complete the bdev io and close the channel */
         free(req->counter);
-		spdk_bdev_free_io(bdev_io);
 		spdk_put_io_channel(req->context->bdev_io_channel);
 		spdk_bdev_close(req->context->bdev_desc);
 		SPDK_NOTICELOG("Stopping app\n");
@@ -169,6 +176,35 @@ void write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg) {
 		SPDK_NOTICELOG("counter %d\n", *(req->counter));
 	}
 
+    spdk_bdev_free_io(bdev_io);
+	spdk_dma_free(req->buff);
+    free(req);
+}
+
+void read_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg) {
+	Request *req = cb_arg;
+
+	if (success) {
+		SPDK_NOTICELOG("Read string from bdev : %s\n", req->buff);
+	} else {
+		SPDK_ERRLOG("bdev io read error\n");
+	}
+    
+	__atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
+
+	if (*(req->counter) == req->target) {
+		/* Complete the bdev io and close the channel */
+        free(req->counter);
+		spdk_put_io_channel(req->context->bdev_io_channel);
+		spdk_bdev_close(req->context->bdev_desc);
+		SPDK_NOTICELOG("Stopping app\n");
+		spdk_app_stop(0);
+	} else {
+		SPDK_NOTICELOG("counter %d\n", *(req->counter));
+	}
+
+	spdk_dma_free(req->buff);
+    spdk_bdev_free_io(bdev_io);
     free(req);
 }
 
@@ -200,16 +236,17 @@ int load(void *argv) {
     // 1. Load the index
     int rc = 0;
     size_t idx = 0;
-    size_t *counter = (size_t)malloc(sizeof(size_t));
+    // size_t counter = 0;
+    size_t *counter = (size_t *)malloc(sizeof(size_t));
+    *counter = 0;
     size_t target = total_node + ceil((double)max_key / LOG_CAPACITY);
     ptr__t next_pos = 1, tmp_ptr = 0;
-    *counter = 0;
 
     for (size_t i = 0; i < layer_cnt; i++) {
         size_t extent = max_key / layer_cap[i], start_key = 0;
         SPDK_NOTICELOG("layer %lu extent %lu\n", i, extent);
         for (size_t j = 0; j < layer_cap[i]; j++) {
-            Request *req = init_request(counter, target, sizeof(Node) * idx++, db_ctx);
+            Request *req = init_request(db_ctx, counter, target, sizeof(Node) * idx++, NULL);
             Node *cur_node = (Node *)req->buff;
             cur_node->num = NODE_CAPACITY;
             cur_node->type = (i == layer_cnt - 1) ? LEAF : INTERNAL;
@@ -234,7 +271,7 @@ int load(void *argv) {
 
     // 2. Load the value log
     for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
-        Request *req = init_request(counter, target, sizeof(Log) * idx++, db_ctx);
+        Request *req = init_request(db_ctx, counter, target, sizeof(Log) * idx++, NULL);
         Log *cur_log = (Log *)req->buff;
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
             sprintf(cur_log->val[j], "%63lu", i + j);
@@ -277,9 +314,9 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 int run(void *argv) {
     SPDK_NOTICELOG("Run: %lu layers, %lu requests, and %lu threads\n", 
                     layer_cnt, request_cnt, thread_cnt);
-    spdk_app_stop(0);
-    // initialize(layer_num, RUN_MODE);
-    // build_cache(layer_num > 3 ? 3 : layer_num);
+
+    initialize(layer_cnt, RUN_MODE);
+    build_cache(layer_cnt > 3 ? 3 : layer_cnt);
 
     // worker_num = thread_num;
     // struct timeval start, end;
@@ -325,26 +362,27 @@ void *subtask(void *args) {
 }
 
 int get(key__t key, val__t val, int db_handler) {
-    ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
-    Node *node;
+    // ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+    // Node *node;
 
-    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
+    // if (posix_memalign((void **)&node, 512, sizeof(Node))) {
+    //     perror("posix_memalign failed");
+    //     exit(1);
+    // }
 
-    if (cache_cap > 0) {
-        do {
-            ptr = next_node(key, (Node *)ptr);
-        } while (!is_file_offset(ptr));
-    }
+    // if (cache_cap > 0) {
+    //     do {
+    //         ptr = next_node(key, (Node *)ptr);
+    //     } while (!is_file_offset(ptr));
+    // }
 
-    do {
-        read_node(ptr, node, db_handler);
-        ptr = next_node(key, node);
-    } while (node->type != LEAF);
+    // do {
+    //     read_node(ptr, node, db_handler);
+    //     ptr = next_node(key, node);
+    // } while (node->type != LEAF);
 
-    return retrieve_value(ptr, val, db_handler);
+    // return retrieve_value(ptr, val, db_handler);
+    return 0;
 }
 
 void print_node(ptr__t ptr, Node *node) {
@@ -365,35 +403,75 @@ void print_log(ptr__t ptr, Log *log) {
     SPDK_NOTICELOG("\n----------------\n");
 }
 
-void read_node(ptr__t ptr, Node *node, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    read(db_handler, node, sizeof(Node));
+void read_node(ptr__t ptr, Node *node, Context *ctx, size_t *counter, size_t target) {
+    Request *req = init_request(ctx, counter, target, decode(ptr), (void *)node);
     
+	int rc = 0;
+
+	SPDK_NOTICELOG("Reading io buff %x offset %d\n", req->buff, req->offset);
+	rc = spdk_bdev_read(req->context->bdev_desc, req->context->bdev_io_channel,
+			    req->buff, req->offset, sizeof(Node), read_complete, req);
+
+	if (rc == -ENOMEM) {
+		SPDK_NOTICELOG("Queueing io\n");
+		/* In case we cannot perform I/O now, queue I/O */
+		req->context->bdev_io_wait.bdev = req->context->bdev;
+		req->context->bdev_io_wait.cb_fn = read_node;
+		req->context->bdev_io_wait.cb_arg = req;
+		spdk_bdev_queue_io_wait(req->context->bdev, req->context->bdev_io_channel,
+					&req->context->bdev_io_wait);
+	} else if (rc) {
+		SPDK_ERRLOG("%s error while reading from bdev: %d\n", spdk_strerror(-rc), rc);
+		spdk_put_io_channel(req->context->bdev_io_channel);
+		spdk_bdev_close(req->context->bdev_desc);
+		spdk_app_stop(-1);
+	}
+
     // Debug output
     // print_node(ptr, node);
 }
 
-void read_log(ptr__t ptr, Log *log, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    read(db_handler, log, sizeof(Log));
+void read_log(ptr__t ptr, Node *node, Context *ctx, size_t *counter, size_t target) {
+    Request *req = init_request(ctx, counter, target, decode(ptr), (void *)node);
+    
+	int rc = 0;
+
+	SPDK_NOTICELOG("Reading io\n");
+	rc = spdk_bdev_read(req->context->bdev_desc, req->context->bdev_io_channel,
+			    req->buff, req->offset, sizeof(Log), read_complete, req);
+
+	if (rc == -ENOMEM) {
+		SPDK_NOTICELOG("Queueing io\n");
+		/* In case we cannot perform I/O now, queue I/O */
+		req->context->bdev_io_wait.bdev = req->context->bdev;
+		req->context->bdev_io_wait.cb_fn = read_log;
+		req->context->bdev_io_wait.cb_arg = req;
+		spdk_bdev_queue_io_wait(req->context->bdev, req->context->bdev_io_channel,
+					&req->context->bdev_io_wait);
+	} else if (rc) {
+		SPDK_ERRLOG("%s error while reading from bdev: %d\n", spdk_strerror(-rc), rc);
+		spdk_put_io_channel(req->context->bdev_io_channel);
+		spdk_bdev_close(req->context->bdev_desc);
+		spdk_app_stop(-1);
+	}
 
     // Debug output
     // print_log(ptr, log);
 }
 
 int retrieve_value(ptr__t ptr, val__t val, int db_handler) {
-    Log *log;
-    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
+    // Log *log;
+    // if (posix_memalign((void **)&log, 512, sizeof(Log))) {
+    //     perror("posix_memalign failed");
+    //     exit(1);
+    // }
 
-    ptr__t mask = BLK_SIZE - 1;
-    ptr__t base = ptr & (~mask);
-    ptr__t offset = ptr & mask;
+    // ptr__t mask = BLK_SIZE - 1;
+    // ptr__t base = ptr & (~mask);
+    // ptr__t offset = ptr & mask;
 
-    read_log(base, log, db_handler);
-    memcpy(val, log->val[offset / VAL_SIZE], VAL_SIZE);
+    // read_log(base, log, db_handler);
+    // memcpy(val, log->val[offset / VAL_SIZE], VAL_SIZE);
 
     return 0;
 }
@@ -446,7 +524,7 @@ int main(int argc, char *argv[]) {
 	 * Parse built-in SPDK command line parameters as well
 	 * as our custom one(s).
 	 */
-	if ((rc = spdk_app_parse_args(argc, argv, &opts, "M:N:O:T", NULL, parse_arg,
+	if ((rc = spdk_app_parse_args(argc, argv, &opts, "M:N:O:T:", NULL, parse_arg,
 				      prompt_help)) != SPDK_APP_PARSE_ARGS_SUCCESS) {
 		exit(rc);
 	}
