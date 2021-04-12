@@ -5,7 +5,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-Request *init_request() {
+Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair) {
     Request *req = (Request *)malloc(sizeof(Request));
 
 	req->buff = spdk_zmalloc(BLK_SIZE, BLK_SIZE, NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
@@ -14,6 +14,8 @@ Request *init_request() {
         return NULL;
     }
     req->is_completed = false;
+    req->ns = ns;
+    req->qpair = qpair;
 
     return req;
 }
@@ -69,10 +71,8 @@ void initialize(size_t layer_num, int mode) {
 //     printf("Cache built. %lu layers %lu entries in total.\n", layer_num, entry_num);
 // }
 
-void cleanup(void) {
+void cleanup() {
 	struct spdk_nvme_detach_ctx *detach_ctx = NULL;
-
-    free(global_ns);
 
     spdk_nvme_detach_async(global_ctrlr, &detach_ctx);
 
@@ -107,7 +107,79 @@ int compare_nodes(Node *x, Node *y) {
     return 1;
 }
 
-// int load(size_t layer_num) {
+void wait_for_completion(Request **list, struct spdk_nvme_qpair *qpair) {
+    while (*list != NULL) {
+        spdk_nvme_qpair_process_completions(qpair, 0);
+        Request *cur = *list, *pre = NULL;
+        while (cur != NULL) {
+            Request *next = cur->next;
+            if (cur->is_completed) {
+                if (cur == *list) {
+                    *list = next;
+                } else {
+                    pre->next = next;
+                }
+                free(cur);
+                printf("free: %x\n", cur);
+            } else {
+                pre = cur;
+            }
+            cur = next;
+        }
+    }
+}
+
+void add_pending_req(Request **list, Request *req) {
+    printf("add_pending_req: %x\n", req);
+    req->next = *list;
+    *list = req;
+}
+
+void write_complete(void *arg, const struct spdk_nvme_cpl *completion) {
+    Request	*req = arg;
+    printf("write_complete: %x\n", req);
+
+	/* See if an error occurred. If so, display information
+	 * about it, and set completion value so that I/O
+	 * caller is aware that an error occurred.
+	 */
+	if (spdk_nvme_cpl_is_error(completion)) {
+		spdk_nvme_qpair_print_completion(req->qpair, (struct spdk_nvme_cpl *)completion);
+		fprintf(stderr, "I/O error status: %s\n", spdk_nvme_cpl_get_status_string(&completion->status));
+		fprintf(stderr, "Write I/O failed, aborting run\n");
+		req->is_completed = false;
+		exit(1);
+	} else {
+	    req->is_completed = true;
+    }
+
+	/*
+	 * The write I/O has completed.  Free the buffer associated with
+	 *  the write I/O and allocate a new zeroed buffer for reading
+	 *  the data back from the NVMe namespace.
+	 */
+    spdk_free(req->buff);
+}
+
+void spdk_write(Request **list, Request *req, size_t lba, size_t nlba) {
+    int rc = spdk_nvme_ns_cmd_write(req->ns, req->qpair, req->buff,
+                                    lba, nlba, write_complete, req, 0);
+    if (rc != 0) {
+        switch (rc)
+        {
+            case -ENOMEM:
+                wait_for_completion(list, req->qpair);
+                break;
+            
+            default:
+                printf("starting write I/O failed: %d\n", rc);
+                exit(1);
+        }
+    } else {
+        add_pending_req(list, req);
+    }
+}
+
 int load() {
     printf("Load: %lu layers\n", layer_cnt);
     initialize(layer_cnt, LOAD_MODE);
@@ -117,11 +189,13 @@ int load() {
     size_t idx = 0;
     ptr__t next_pos = 1, tmp_ptr = 0;
 
+    Request *pending_list = NULL;
+
     for (size_t i = 0; i < layer_cnt; i++) {
         size_t extent = max_key / layer_cap[i], start_key = 0;
         printf("layer %lu extent %lu\n", i, extent);
         for (size_t j = 0; j < layer_cap[i]; j++) {
-            Request *req = init_request();
+            Request *req = init_request(global_ns, global_qpair);
             Node *cur_node = (Node *)req->buff;
             cur_node->num = NODE_CAPACITY;
             cur_node->type = (i == layer_cnt - 1) ? LEAF : INTERNAL;
@@ -134,7 +208,7 @@ int load() {
                 next_pos++;
             }
             start_key += extent;
-
+            spdk_write(&pending_list, req, idx++, 1);
 
             // Sanity check
             // read_node(tmp_ptr, &tmp);
@@ -145,18 +219,20 @@ int load() {
 
     // 2. Load the value log
     for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
-        Request *req = init_request();
+        Request *req = init_request(global_ns, global_qpair);
         Log *cur_log = (Log *)req->buff;
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
             sprintf(cur_log->val[j], "%63lu", i + j);
         }
-        // write(db, log, sizeof(Log));
+        spdk_write(&pending_list, req, idx++, 1);
 
         // Sanity check
         // read_log((total_node + i / LOG_CAPACITY) * BLK_SIZE, &log);
     }
 
-    // return terminate();
+    wait_for_completion(&pending_list, global_qpair);
+
+    return terminate();
 	// printf("Calling spdk_app_stop\n");
     // spdk_app_stop(0);
 }
@@ -407,7 +483,8 @@ void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	printf("Attached to %s\n", trid->traddr);
 
     global_ctrlr = ctrlr;
-	global_ns = spdk_nvme_ctrlr_get_ns(ctrlr, 0);
+	global_ns = spdk_nvme_ctrlr_get_ns(ctrlr, 1);
+	global_qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, NULL, 0);
 }
 
 int main(int argc, char *argv[]) {
@@ -439,7 +516,7 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	printf("Initialization complete.\n");
+	printf("Initialization complete. ctrlr: %x ns: %x\n", global_ctrlr, global_ns);
     if (strcmp(db_mode, "load") == 0) {
         load();
     } else if (strcmp(db_mode, "run") == 0) {
@@ -447,7 +524,7 @@ int main(int argc, char *argv[]) {
     }
 
 	// hello_world();
-	cleanup();
+	// cleanup();
 
 	return 0;
 }

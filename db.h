@@ -49,12 +49,10 @@ typedef struct _Log {
 typedef struct {
     void *buff;
     bool is_completed;
+    struct spdk_nvme_ns	*ns;
+    struct spdk_nvme_qpair *qpair;
+    struct Request *next;
 } Request;
-
-typedef struct {
-    Request *self;
-    Request *next;
-} RequstList;
 
 typedef struct {
     size_t op_count;
@@ -84,7 +82,7 @@ struct spdk_nvme_ctrlr *global_ctrlr = NULL;
 struct spdk_nvme_ns	   *global_ns    = NULL;
 struct spdk_nvme_qpair *global_qpair = NULL;
 
-Request *init_request();
+Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair);
 
 ptr__t is_file_offset(ptr__t ptr) {
     return ptr & FILE_MASK;
@@ -109,6 +107,18 @@ void *subtask(void *args);
 int get(key__t key, val__t val, int db_handler);
 
 ptr__t next_node(key__t key, Node *node);
+
+void wait_for_completion(Request **list, struct spdk_nvme_qpair *qpair);
+
+void add_pending_req(Request **list, Request *req);
+
+void write_complete(void *arg, const struct spdk_nvme_cpl *completion);
+
+void spdk_write(Request **list, Request *req, size_t lba, size_t nlba);
+
+// void read_complete(void *arg, const struct spdk_nvme_cpl *completion);
+
+// void spdk_read(Request *req, size_t lba, size_t nlba);
 
 // void read_node(ptr__t ptr, Node *node, Context *ctx, size_t *counter, size_t target);
 
@@ -140,5 +150,5 @@ bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	           struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts);
 
-void cleanup(void);
+void cleanup();
 #endif

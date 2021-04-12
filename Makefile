@@ -35,6 +35,6 @@ APP = db
 
 C_SRCS := db.c
 
-CFLAGS += -g
+CFLAGS = -g -O0
 
 include $(SPDK_ROOT_DIR)/mk/nvme.libtest.mk
