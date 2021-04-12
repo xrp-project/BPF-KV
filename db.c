@@ -5,13 +5,17 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair) {
+Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff) {
     Request *req = (Request *)malloc(sizeof(Request));
 
-	req->buff = spdk_zmalloc(BLK_SIZE, BLK_SIZE, NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
-    if (req->buff == NULL) {
-        printf("ERROR: buffer allocation failed\n");
-        return NULL;
+    if (buff != NULL) {
+        req->buff = buff;
+    } else {
+        req->buff = spdk_zmalloc(BLK_SIZE, BLK_SIZE, NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
+        if (req->buff == NULL) {
+            printf("ERROR: buffer allocation failed\n");
+            return NULL;
+        }
     }
     req->is_completed = false;
     req->ns = ns;
@@ -34,42 +38,48 @@ void initialize(size_t layer_num, int mode) {
     printf("%lu blocks in total, max key is %lu\n", total_node, max_key);
 }
 
-// void build_cache(size_t layer_num) {
-//     size_t entry_num = 0;
-//     for (size_t i = 0; i < layer_num; i++) {
-//         entry_num += layer_cap[i];
-//     }
+void build_cache(size_t layer_num) {
+    size_t entry_num = 0;
+    for (size_t i = 0; i < layer_num; i++) {
+        entry_num += layer_cap[i];
+    }
     
-//     u_int32_t buff_align = spdk_bdev_get_buf_align(db_ctx->bdev);
-// 	cache = spdk_dma_zmalloc(entry_num * sizeof(Node), buff_align, NULL);
+	cache = spdk_zmalloc(BLK_SIZE * entry_num, BLK_SIZE, NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
 
-//     if (!cache) {
-// 		printf("Failed to allocate memory\n");
-// 		spdk_put_io_channel(db_ctx->bdev_io_channel);
-// 		spdk_bdev_close(db_ctx->bdev_desc);
-// 		spdk_app_stop(-1);
-// 		return;
-// 	}
+    if (!cache) {
+        printf("ERROR: cache allocation failed\n");
+		exit(1);
+	}
 
-//     size_t head = 0, tail = 1;
-//     size_t counter = 0;
-//     size_t target = entry_num;
-//     printf("ptr %d %d\n", encode(0), 0);
-//     read_node(encode(0), &cache[head], db_ctx, &counter, target);
+    size_t head = 0, tail = 1;
+    size_t counter = 0;
+    size_t target = entry_num;
+    Request *pending_list = NULL;
+    Request *req = init_request(global_ns, global_qpair, &cache[head]);
+    spdk_read(&pending_list, req, 0, 1);
+    wait_for_completion(&pending_list, global_qpair);
 
-//     while (tail < entry_num) {
-//         for (size_t i = 0; i < cache[head].num; i++) {
-//             printf("head %lu i %lu ptr %d %d\n", head, i, cache[head].ptr[i], decode(cache[head].ptr[i]));
-//             read_node(cache[head].ptr[i], &cache[tail], db_ctx, &counter, target);
-//             cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
-//             tail++;
-//         }
-//         head++;
-//     }
+    while (tail < entry_num) {
+        for (size_t i = 0; i < cache[head].num; i++) {
+            // printf("head %lu i %lu ptr %d %d\n", head, i, cache[head].ptr[i], decode(cache[head].ptr[i]));
+            req = init_request(global_ns, global_qpair, &cache[tail]);
+            spdk_read(&pending_list, req, decode(cache[head].ptr[i]), 1);
+            // read_node(cache[head].ptr[i], &cache[tail], db_ctx, &counter, target);
+            cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
+            tail++;
+        }
+        wait_for_completion(&pending_list, global_qpair);
+        head++;
+    }
 
-//     cache_cap = entry_num; // enable the cache
-//     printf("Cache built. %lu layers %lu entries in total.\n", layer_num, entry_num);
-// }
+    cache_cap = entry_num; // enable the cache
+    printf("Cache built. %lu layers %lu entries in total.\n", layer_num, entry_num);
+    
+    // Sanity check
+    // for (size_t i = 0; i < cache_cap; i++) {
+    //     print_node(i, &cache[i]);
+    // }
+}
 
 void cleanup() {
 	struct spdk_nvme_detach_ctx *detach_ctx = NULL;
@@ -120,7 +130,7 @@ void wait_for_completion(Request **list, struct spdk_nvme_qpair *qpair) {
                     pre->next = next;
                 }
                 free(cur);
-                printf("free: %x\n", cur);
+                // printf("free: %x\n", cur);
             } else {
                 pre = cur;
             }
@@ -130,7 +140,7 @@ void wait_for_completion(Request **list, struct spdk_nvme_qpair *qpair) {
 }
 
 void add_pending_req(Request **list, Request *req) {
-    printf("add_pending_req: %x\n", req);
+    // printf("add_pending_req: %x\n", req);
     req->next = *list;
     *list = req;
 }
@@ -195,7 +205,7 @@ int load() {
         size_t extent = max_key / layer_cap[i], start_key = 0;
         printf("layer %lu extent %lu\n", i, extent);
         for (size_t j = 0; j < layer_cap[i]; j++) {
-            Request *req = init_request(global_ns, global_qpair);
+            Request *req = init_request(global_ns, global_qpair, NULL);
             Node *cur_node = (Node *)req->buff;
             cur_node->num = NODE_CAPACITY;
             cur_node->type = (i == layer_cnt - 1) ? LEAF : INTERNAL;
@@ -203,8 +213,8 @@ int load() {
             for (size_t k = 0; k < cur_node->num; k++) {
                 cur_node->key[k] = start_key + k * sub_extent;
                 cur_node->ptr[k] = cur_node->type == INTERNAL ? 
-                              encode(next_pos   * BLK_SIZE) :
-                              encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
+                              encode(next_pos) :
+                              encode(total_node + (next_pos - total_node) * VAL_SIZE / BLK_SIZE);
                 next_pos++;
             }
             start_key += extent;
@@ -219,7 +229,7 @@ int load() {
 
     // 2. Load the value log
     for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
-        Request *req = init_request(global_ns, global_qpair);
+        Request *req = init_request(global_ns, global_qpair, NULL);
         Log *cur_log = (Log *)req->buff;
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
             sprintf(cur_log->val[j], "%63lu", i + j);
@@ -259,13 +269,51 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
     }
 }
 
+void read_complete(void *arg, const struct spdk_nvme_cpl *completion) {
+    Request	*req = arg;
+    // printf("read_complete: %x\n", req);
+
+	/* See if an error occurred. If so, display information
+	 * about it, and set completion value so that I/O
+	 * caller is aware that an error occurred.
+	 */
+	if (spdk_nvme_cpl_is_error(completion)) {
+		spdk_nvme_qpair_print_completion(req->qpair, (struct spdk_nvme_cpl *)completion);
+		fprintf(stderr, "I/O error status: %s\n", spdk_nvme_cpl_get_status_string(&completion->status));
+		fprintf(stderr, "Write I/O failed, aborting run\n");
+		req->is_completed = false;
+		exit(1);
+	} else {
+	    req->is_completed = true;
+    }
+}
+
+void spdk_read(Request **list, Request *req, size_t lba, size_t nlba) {
+    int rc = spdk_nvme_ns_cmd_read(req->ns, req->qpair, req->buff,
+                                    lba, nlba, read_complete, req, 0);
+    if (rc != 0) {
+        switch (rc)
+        {
+            case -ENOMEM:
+                wait_for_completion(list, req->qpair);
+                break;
+            
+            default:
+                printf("starting write I/O failed: %d\n", rc);
+                exit(1);
+        }
+    } else {
+        add_pending_req(list, req);
+    }
+}
+
 // int run(size_t layer_num, size_t request_num, size_t thread_num) {
 int run() {
     printf("Run: %lu layers, %lu requests, and %lu threads\n", 
                     layer_cnt, request_cnt, thread_cnt);
 
     initialize(layer_cnt, RUN_MODE);
-    // build_cache(layer_cnt > 3 ? 3 : layer_cnt);
+    build_cache(layer_cnt > 3 ? 3 : layer_cnt);
 
     // worker_num = thread_num;
     // struct timeval start, end;

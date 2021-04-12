@@ -82,7 +82,7 @@ struct spdk_nvme_ctrlr *global_ctrlr = NULL;
 struct spdk_nvme_ns	   *global_ns    = NULL;
 struct spdk_nvme_qpair *global_qpair = NULL;
 
-Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair);
+Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff);
 
 ptr__t is_file_offset(ptr__t ptr) {
     return ptr & FILE_MASK;
@@ -102,7 +102,7 @@ int run();
 
 void *subtask(void *args);
 
-// void build_cache(size_t layer_num);
+void build_cache(size_t layer_num);
 
 int get(key__t key, val__t val, int db_handler);
 
@@ -116,9 +116,9 @@ void write_complete(void *arg, const struct spdk_nvme_cpl *completion);
 
 void spdk_write(Request **list, Request *req, size_t lba, size_t nlba);
 
-// void read_complete(void *arg, const struct spdk_nvme_cpl *completion);
+void read_complete(void *arg, const struct spdk_nvme_cpl *completion);
 
-// void spdk_read(Request *req, size_t lba, size_t nlba);
+void spdk_read(Request **list, Request *req, size_t lba, size_t nlba);
 
 // void read_node(ptr__t ptr, Node *node, Context *ctx, size_t *counter, size_t target);
 
