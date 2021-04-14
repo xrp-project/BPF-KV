@@ -1,5 +1,12 @@
 # SimpleKV
 
+* Prerequisite
+
+Setup SPDK as [Getting Started](https://spdk.io/doc/getting_started.html).
+
+Update the variable `SPDK_ROOT_DIR` in `SimpleKV/Makefile`.
+
+
 * Build
 ```
 $ make
