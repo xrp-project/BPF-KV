@@ -247,8 +247,6 @@ int load() {
     spdk_free(tmp_node);
     spdk_free(tmp_log);
     return terminate();
-	// printf("Calling spdk_app_stop\n");
-    // spdk_app_stop(0);
 }
 
 void initialize_workers(WorkerArg *args, size_t total_op_count) {
