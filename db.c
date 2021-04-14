@@ -6,7 +6,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff, key__t key, size_t *counter) {
+Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, 
+                      void *buff, key__t key, size_t *counter, long *timer) {
     Request *req = (Request *)malloc(sizeof(Request));
 
     req->key = key;
@@ -23,6 +24,7 @@ Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, vo
     req->ns = ns;
     req->qpair = qpair;
     req->counter = counter;
+    req->timer = timer;
 
     return req;
 }
@@ -59,14 +61,14 @@ void build_cache(size_t layer_num) {
     size_t head = 0, tail = 1;
     size_t counter = 0;
     size_t target = entry_num;
-    Request *req = init_request(global_ns, global_qpair, &cache[head], 0, global_counter);
+    Request *req = init_request(global_ns, global_qpair, &cache[head], 0, global_counter, NULL);
     spdk_read(req, 0, 1, read_complete);
     wait_for_completion(global_qpair, global_counter, tail);
 
     while (tail < entry_num) {
         for (size_t i = 0; i < cache[head].num; i++) {
             // printf("head %lu i %lu ptr %d %d\n", head, i, cache[head].ptr[i], decode(cache[head].ptr[i]));
-            req = init_request(global_ns, global_qpair, &cache[tail], 0, global_counter);
+            req = init_request(global_ns, global_qpair, &cache[tail], 0, global_counter, NULL);
             spdk_read(req, decode(cache[head].ptr[i]) / BLK_SIZE, 1, read_complete);
             // read_node(cache[head].ptr[i], &cache[tail], db_ctx, &counter, target);
             cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
@@ -152,7 +154,7 @@ void write_complete(void *arg, const struct spdk_nvme_cpl *completion) {
 
 void spdk_write(Request *req, size_t lba, size_t nlba) {
     int rc = 0;
-    
+
     while ((rc = spdk_nvme_ns_cmd_write(req->ns, req->qpair, req->buff,
                                         lba, nlba, write_complete, req, 0)) != 0) {
         switch (rc) {
@@ -188,7 +190,7 @@ int load() {
         printf("layer %lu extent %lu\n", i, extent);
         for (size_t j = 0; j < layer_cap[i]; j++) {
             ptr__t old_pos = next_pos;
-            Request *req = init_request(global_ns, global_qpair, NULL, 0, global_counter);
+            Request *req = init_request(global_ns, global_qpair, NULL, 0, global_counter, NULL);
             Node *cur_node = (Node *)req->buff;
             cur_node->num = NODE_CAPACITY;
             cur_node->type = (i == layer_cnt - 1) ? LEAF : INTERNAL;
@@ -223,7 +225,7 @@ int load() {
 
     // 2. Load the value log
     for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
-        Request *req = init_request(global_ns, global_qpair, NULL, 0, global_counter);
+        Request *req = init_request(global_ns, global_qpair, NULL, 0, global_counter, NULL);
         Log *cur_log = (Log *)req->buff;
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
             sprintf(cur_log->val[j], "%63lu", i + j);
@@ -255,8 +257,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
 	    args[i].qpair = NULL;
         args[i].timer = 0;
-        args[i].counter = (size_t *)malloc(sizeof(size_t));
-        *(args[i].counter) = 0;
+        args[i].counter = 0;
     }
 }
 
@@ -269,7 +270,6 @@ void start_workers(pthread_t *tids, WorkerArg *args) {
 void terminate_workers(pthread_t *tids, WorkerArg *args) {
     for (size_t i = 0; i < worker_num; i++) {
         pthread_join(tids[i], NULL);
-        free(args[i].counter);
     }
 }
 
@@ -308,6 +308,7 @@ void traverse_complete(void *arg, const struct spdk_nvme_cpl *completion) {
 	} else {
         if (req->is_value) {
             __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
+
             val__t val;
             memcpy(val, ((Log *)req->buff)->val[req->ofs / VAL_SIZE], VAL_SIZE);
             if (req->key != atoi(val)) {
@@ -315,6 +316,11 @@ void traverse_complete(void *arg, const struct spdk_nvme_cpl *completion) {
             }
             spdk_free(req->buff);
             free(req);
+
+            struct timeval end;
+            gettimeofday(&end, NULL);
+            size_t latency = 1000000 * (end.tv_sec - req->start.tv_sec) + (end.tv_usec - req->start.tv_usec);
+            __atomic_fetch_add(req->timer, latency, __ATOMIC_SEQ_CST);
         } else {
             Node *node = (Node *)req->buff;
             ptr__t ptr = next_node(req->key, node);
@@ -379,29 +385,29 @@ int run() {
 void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
     r->qpair = spdk_nvme_ctrlr_alloc_io_qpair(global_ctrlr, NULL, 0);
-    struct timeval start, end;
 
     srand(r->index);
-    printf("thread %ld op_count %ld\n", r->index, r->op_count);
-    size_t window = 128; // half of the default queue size
+    printf("thread %ld has %ld ops\n", r->index, r->op_count);
+    size_t window = 128; // Half of the default queue size
     for (size_t i = 0; i < r->op_count; i++) {
-        while (i - *(r->counter) > window) {
+        // Move the window
+        while (i - r->counter > window) {
             wait_for_completion(r->qpair, NULL, 0);
         }
 
         key__t key = rand() % max_key;
         val__t val;
 
-        gettimeofday(&start, NULL);
-        get(key, val, r->qpair, r->counter);
-        gettimeofday(&end, NULL);
-        r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
+        get(key, val, r);
     }
-    printf("wait_for_completion\n");
-    wait_for_completion(r->qpair, r->counter, r->op_count);
+    wait_for_completion(r->qpair, &(r->counter), r->op_count);
+    printf("thread %ld finishes %ld ops\n", r->index, r->counter);
 }
 
-int get(key__t key, val__t val, struct spdk_nvme_qpair *qpair, size_t *counter) {
+int get(key__t key, val__t val, WorkerArg *r) {
+    Request *req = init_request(global_ns, r->qpair, NULL, key, &(r->counter), &(r->timer));
+    gettimeofday(&req->start, NULL);
+
     // printf("get key: %lu\n", key);
     ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
 
@@ -411,14 +417,12 @@ int get(key__t key, val__t val, struct spdk_nvme_qpair *qpair, size_t *counter) 
         } while (!is_file_offset(ptr));
     }
 
-    Request *req = init_request(global_ns, qpair, NULL, key, counter);
     if (cache_layer == layer_cnt) {
         req->is_value = true;
         ptr__t mask = BLK_SIZE - 1;
         req->ofs = ptr & mask;
         ptr &= (~mask);
     }
-    // TODO: there may be a bug when caching all index layers
     spdk_read(req, decode(ptr) / BLK_SIZE, 1, traverse_complete);
 
     return 0;
@@ -532,14 +536,11 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	printf("Initialization complete. ctrlr: %x ns: %x\n", global_ctrlr, global_ns);
     if (strcmp(db_mode, "load") == 0) {
         load();
     } else if (strcmp(db_mode, "run") == 0) {
         run();
     }
 
-	// hello_world();
-	// cleanup();
 	return 0;
 }

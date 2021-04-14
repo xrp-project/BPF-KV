@@ -54,15 +54,16 @@ typedef struct {
     bool is_value;
     struct spdk_nvme_ns	*ns;
     struct spdk_nvme_qpair *qpair;
-    struct Request *next;
+    struct timeval start;
+    long *timer;
 } Request;
 
 typedef struct {
     size_t op_count;
     size_t index;
     struct spdk_nvme_qpair *qpair;
-    size_t timer;
-    size_t *counter;
+    long timer;
+    size_t counter;
 } WorkerArg;
 
 #define BDEV_NAME "NVMe2n1"
@@ -88,7 +89,7 @@ struct spdk_nvme_ns	   *global_ns    = NULL;
 struct spdk_nvme_qpair *global_qpair = NULL;
 size_t *global_counter = NULL;
 
-Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff, key__t key, size_t *counter);
+Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff, key__t key, size_t *counter, long *timer);
 
 ptr__t is_file_offset(ptr__t ptr) {
     return ptr & FILE_MASK;
@@ -110,7 +111,7 @@ void *subtask(void *args);
 
 void build_cache(size_t layer_num);
 
-int get(key__t key, val__t val, struct spdk_nvme_qpair *qpair, size_t *counter);
+int get(key__t key, val__t val, WorkerArg *r);
 
 ptr__t next_node(key__t key, Node *node);
 
