@@ -50,7 +50,7 @@ typedef struct {
     key__t key;
     ptr__t ofs;
     void *buff;
-    bool is_completed;
+    size_t *counter;
     bool is_value;
     struct spdk_nvme_ns	*ns;
     struct spdk_nvme_qpair *qpair;
@@ -62,6 +62,7 @@ typedef struct {
     size_t index;
     struct spdk_nvme_qpair *qpair;
     size_t timer;
+    size_t *counter;
 } WorkerArg;
 
 #define BDEV_NAME "NVMe2n1"
@@ -75,7 +76,6 @@ size_t cache_layer = 3;
 size_t layer_cnt   = 0;
 size_t request_cnt = 0;
 size_t thread_cnt  = 0;
-size_t counter = 0;
 
 size_t worker_num;
 size_t total_node;
@@ -86,8 +86,9 @@ size_t cache_cap;
 struct spdk_nvme_ctrlr *global_ctrlr = NULL;
 struct spdk_nvme_ns	   *global_ns    = NULL;
 struct spdk_nvme_qpair *global_qpair = NULL;
+size_t *global_counter = NULL;
 
-Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff, key__t key);
+Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff, key__t key, size_t *counter);
 
 ptr__t is_file_offset(ptr__t ptr) {
     return ptr & FILE_MASK;
@@ -109,21 +110,19 @@ void *subtask(void *args);
 
 void build_cache(size_t layer_num);
 
-int get(key__t key, val__t val, struct spdk_nvme_qpair *qpair, Request **pending_list);
+int get(key__t key, val__t val, struct spdk_nvme_qpair *qpair, size_t *counter);
 
 ptr__t next_node(key__t key, Node *node);
 
-void wait_for_completion(Request **list, struct spdk_nvme_qpair *qpair);
-
-void add_pending_req(Request **list, Request *req);
+void wait_for_completion(struct spdk_nvme_qpair *qpair, size_t *counter, size_t target);
 
 void write_complete(void *arg, const struct spdk_nvme_cpl *completion);
 
-void spdk_write(Request **list, Request *req, size_t lba, size_t nlba);
+void spdk_write(Request *req, size_t lba, size_t nlba);
 
 void read_complete(void *arg, const struct spdk_nvme_cpl *completion);
 
-void spdk_read(Request **list, Request *req, size_t lba, size_t nlba, spdk_nvme_cmd_cb cb_fn);
+void spdk_read(Request *req, size_t lba, size_t nlba, spdk_nvme_cmd_cb cb_fn);
 
 // void read_node(ptr__t ptr, Node *node, Context *ctx, size_t *counter, size_t target);
 
