@@ -147,7 +147,8 @@ void write_complete(void *arg, const struct spdk_nvme_cpl *completion) {
 		fprintf(stderr, "Write I/O failed, aborting run\n");
 		exit(1);
 	} else {
-        __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
+        // __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
+        (*(req->counter))++;
         free(req);
     }
 }
@@ -285,7 +286,8 @@ void read_complete(void *arg, const struct spdk_nvme_cpl *completion) {
 		fprintf(stderr, "Read I/O failed, aborting run\n");
 		exit(1);
 	} else {
-        __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
+        // __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
+        (*(req->counter))++;
         free(req);
     }
 }
@@ -305,20 +307,23 @@ void traverse_complete(void *arg, const struct spdk_nvme_cpl *completion) {
 		exit(1);
 	} else {
         if (req->is_value) {
-            __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
-
             val__t val;
             memcpy(val, ((Log *)req->buff)->val[req->ofs / VAL_SIZE], VAL_SIZE);
             if (req->key != atoi(val)) {
                 printf("Error! key: %lu val: %s\n", req->key, val);
-            }
-            spdk_free(req->buff);
-            free(req);
+            }            
 
             struct timeval end;
             gettimeofday(&end, NULL);
             size_t latency = 1000000 * (end.tv_sec - req->start.tv_sec) + (end.tv_usec - req->start.tv_usec);
-            __atomic_fetch_add(req->timer, latency, __ATOMIC_SEQ_CST);
+
+            // __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
+            // __atomic_fetch_add(req->timer, latency, __ATOMIC_SEQ_CST);
+            (*(req->counter))++;
+            (*(req->timer)) += latency;
+
+            spdk_free(req->buff);
+            free(req);
         } else {
             Node *node = (Node *)req->buff;
             ptr__t ptr = next_node(req->key, node);
@@ -331,6 +336,7 @@ void traverse_complete(void *arg, const struct spdk_nvme_cpl *completion) {
             spdk_read(req, decode(ptr) / BLK_SIZE, 1, traverse_complete);
         }
     }
+    // printf("traverse_complete: %lu\n", k);
 }
 
 void spdk_read(Request *req, size_t lba, size_t nlba, spdk_nvme_cmd_cb cb_fn) {
@@ -389,14 +395,15 @@ void *subtask(void *args) {
     size_t window = 128; // Half of the default queue size
     for (size_t i = 0; i < r->op_count; i++) {
         // Move the window
-        while (i - r->counter > window) {
-            wait_for_completion(r->qpair, NULL, 0);
-        }
+        // while (i - r->counter > window) {
+        //     wait_for_completion(r->qpair, NULL, 0);
+        // }
 
         key__t key = rand() % max_key;
         val__t val;
 
         get(key, val, r);
+        wait_for_completion(r->qpair, NULL, 0);
     }
     wait_for_completion(r->qpair, &(r->counter), r->op_count);
     printf("thread %ld finishes %ld ops\n", r->index, r->counter);
