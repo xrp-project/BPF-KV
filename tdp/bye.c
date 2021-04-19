@@ -50,32 +50,9 @@ int main(int argc, char **argv)
 {
 	struct bpf_object *obj;
 	int ret, lircfd, progfd, inputfd;
-	int testir1 = 0x1dead;
-	int testir2 = 0x20101;
-	unsigned int prog_ids[10], prog_flags[10], prog_cnt;
 
-	/*
-	if (argc != 3) {
-		printf("Usage: %s /dev/lircN /dev/input/eventM\n", argv[0]);
-		return 2;
-	}
-	*/
-
-	ret = bpf_prog_load("drop2.o",
-			    BPF_PROG_TYPE_DDP, &obj, &progfd);
-	if (ret) {
-		printf("Failed to load bpf program\n");
-		return 1;
-	}
-	
 	lircfd = open("/dev/treenvme0", O_RDWR | O_NONBLOCK);
-	ret = bpf_prog_attach(progfd, lircfd, BPF_DDP, 0);
-	if (ret) {
-		printf("Failed to attach bpf to lirc device: %m\n");
-		return 1;
-	}
-	
-	//ret = bpf_prog_detach2(progfd, lircfd, BPF_DDP);
+	ret = bpf_prog_detach2(progfd, lircfd, BPF_DDP);
 	if (ret) {
 		printf("bpf_prog_detach2: returned %m\n");
 		return 1;

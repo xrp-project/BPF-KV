@@ -4,7 +4,8 @@ CC ?= gcc
 
 BPF_CFLAGS ?= -I$(LIBBPF_DIR)/build/usr/
 
-all: drop.o
+all: drop.o drop2.o
+#all: drop.o drop2.o drop3.o
 
 %.o: %.c
 	$(CLANG) -S \
