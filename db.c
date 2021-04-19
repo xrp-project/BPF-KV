@@ -7,7 +7,7 @@
 #include <sys/stat.h>
 
 int get_handler(int flag) {
-    int fd = open(DB_PATH, flag | O_DIRECT, 0755);
+    int fd = open(DB_PATH, flag, 0755);
     if (fd < 0) {
         printf("Fail to open file %s!\n", DB_PATH);
         exit(0);
@@ -19,7 +19,7 @@ void initialize(size_t layer_num, int mode) {
     if (mode == LOAD_MODE) {
         db = get_handler(O_CREAT|O_TRUNC|O_WRONLY);
     } else {
-        db = get_handler(O_RDONLY);
+        db = get_handler(O_RDWR|O_DIRECT);
     }
     
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
@@ -31,6 +31,21 @@ void initialize(size_t layer_num, int mode) {
     }
     max_key = layer_cap[layer_num - 1] * NODE_CAPACITY;
     cache_cap = 0;
+    size_t log_num = max_key / LOG_CAPACITY + 1;
+    val_lock = (pthread_mutex_t *)malloc(log_num * sizeof(pthread_mutex_t));
+    if (val_lock == NULL) {
+        printf("val_lock malloc fail!\n");
+        terminate();
+        exit(1);
+    }
+    for (size_t i = 0; i < log_num; i++) {
+        if (pthread_mutex_init(&val_lock[i], NULL) != 0) {
+            printf("pthread_mutex_init fail at %lu\n", i);
+            terminate();
+            exit(1);
+        }
+    }
+    printf("%lu locks\n", log_num);
 
     printf("%lu blocks in total, max key is %lu\n", total_node, max_key);
 }
@@ -67,6 +82,9 @@ int terminate() {
     free(layer_cap);
     free(cache);
     close(db);
+    if (val_lock != NULL) {
+        free(val_lock);
+    }
     return 0;
 }
 
@@ -148,7 +166,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
-        args[i].db_handler = get_handler(O_RDONLY);
+        args[i].db_handler = get_handler(O_RDWR|O_DIRECT);
         args[i].timer = 0;
     }
 }
@@ -203,14 +221,24 @@ void *subtask(void *args) {
         key__t key = rand() % max_key;
         val__t val;
 
-        gettimeofday(&start, NULL);
-        get(key, val, r->db_handler);
-        gettimeofday(&end, NULL);
-        r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
+        int type = rand() % 100;
+        if (type < read_ratio) {
+            gettimeofday(&start, NULL);
+            get(key, val, r->db_handler);
+            gettimeofday(&end, NULL);
+        } else if (type < read_ratio + rmw_ratio) {
+            gettimeofday(&start, NULL);    
+            read_modify_write(key, val, r->db_handler);
+            gettimeofday(&end, NULL);
+        } else {
+            sprintf(val, "%63d", rand());
 
-        if (key != atoi(val)) {
-            printf("Error! key: %lu val: %s thrd: %ld\n", key, val, r->index);
-        }       
+            gettimeofday(&start, NULL);    
+            update(key, val, r->db_handler);
+            gettimeofday(&end, NULL);
+        }
+
+        r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec); 
     }
 }
 
@@ -235,6 +263,54 @@ int get(key__t key, val__t val, int db_handler) {
     } while (node->type != LEAF);
 
     return retrieve_value(ptr, val, db_handler);
+}
+
+void update(key__t key, val__t val, int db_handler) {
+    ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+    Node *node;
+
+    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
+        perror("posix_memalign failed");
+        exit(1);
+    }
+
+    if (cache_cap > 0) {
+        do {
+            ptr = next_node(key, (Node *)ptr);
+        } while (!is_file_offset(ptr));
+    }
+
+    do {
+        read_node(ptr, node, db_handler);
+        ptr = next_node(key, node);
+    } while (node->type != LEAF);
+
+    
+    update_value(ptr, val, db_handler);
+}
+
+void read_modify_write(key__t key, val__t val, int db_handler) {
+    ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+    Node *node;
+
+    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
+        perror("posix_memalign failed");
+        exit(1);
+    }
+
+    if (cache_cap > 0) {
+        do {
+            ptr = next_node(key, (Node *)ptr);
+        } while (!is_file_offset(ptr));
+    }
+
+    do {
+        read_node(ptr, node, db_handler);
+        ptr = next_node(key, node);
+    } while (node->type != LEAF);
+
+    
+    read_modify_write_value(ptr, val, db_handler);
 }
 
 void print_node(ptr__t ptr, Node *node) {
@@ -271,6 +347,14 @@ void read_log(ptr__t ptr, Log *log, int db_handler) {
     // print_log(ptr, log);
 }
 
+void write_log(ptr__t ptr, Log *log, int db_handler) {
+    lseek(db_handler, decode(ptr), SEEK_SET);
+    write(db_handler, log, sizeof(Log));
+
+    // Debug output
+    // print_log(ptr, log);
+}
+
 int retrieve_value(ptr__t ptr, val__t val, int db_handler) {
     Log *log;
     if (posix_memalign((void **)&log, 512, sizeof(Log))) {
@@ -288,6 +372,56 @@ int retrieve_value(ptr__t ptr, val__t val, int db_handler) {
     return 0;
 }
 
+void update_value(ptr__t ptr, val__t val, int db_handler) {
+    Log *log;
+    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
+        perror("posix_memalign failed");
+        exit(1);
+    }
+
+    ptr__t mask = BLK_SIZE - 1;
+    ptr__t base = ptr & (~mask);
+    ptr__t offset = ptr & mask;
+    size_t log_idx = decode(base) / BLK_SIZE - total_node;
+
+    read_log(base, log, db_handler);
+    memcpy(log->val[offset / VAL_SIZE], val, VAL_SIZE);
+
+    int rc = 0;
+    if ((rc = pthread_mutex_lock(&val_lock[log_idx])) != 0) {
+        printf("lock error %d %lu\n", rc, log_idx);
+    }
+
+    write_log(base, log, db_handler);
+
+    pthread_mutex_unlock(&val_lock[log_idx]);
+}
+
+void read_modify_write_value(ptr__t ptr, val__t val, int db_handler) {
+    Log *log;
+    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
+        perror("posix_memalign failed");
+        exit(1);
+    }
+
+    ptr__t mask = BLK_SIZE - 1;
+    ptr__t base = ptr & (~mask);
+    ptr__t offset = ptr & mask;
+    size_t log_idx = decode(base) / BLK_SIZE - total_node;
+
+    int rc = 0;
+    if ((rc = pthread_mutex_lock(&val_lock[log_idx])) != 0) {
+        printf("lock error %d %lu\n", rc, log_idx);
+    }
+
+    read_log(base, log, db_handler);
+    size_t num = atoi(log->val[offset / VAL_SIZE]);
+    sprintf(log->val[offset / VAL_SIZE], "%63lu", num / 2);
+    write_log(base, log, db_handler);
+
+    pthread_mutex_unlock(&val_lock[log_idx]);
+}
+
 ptr__t next_node(key__t key, Node *node) {
     for (size_t i = 0; i < node->num; i++) {
         if (key < node->key[i]) {
@@ -299,7 +433,7 @@ ptr__t next_node(key__t key, Node *node) {
 
 int prompt_help() {
     printf("Usage: ./db --load number_of_layers\n");
-    printf("or     ./db --run number_of_layers number_of_requests number_of_threads\n");
+    printf("or     ./db --run number_of_layers number_of_requests number_of_threads read_ratio rmw_ratio\n");
     return 0;
 }
 
@@ -309,9 +443,11 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[1], "--load") == 0) {
         return load(atoi(argv[2]));
     } else if (strcmp(argv[1], "--run") == 0) {
-        if (argc < 5) {
+        if (argc < 7) {
             return prompt_help();
         }
+        read_ratio = atoi(argv[5]);
+        rmw_ratio = atoi(argv[6]);
         return run(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
     } else {
         return prompt_help();

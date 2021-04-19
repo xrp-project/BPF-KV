@@ -39,7 +39,7 @@ typedef struct _Log {
 } Log;
 
 // Database-level information
-#define DB_PATH "./db.storage"
+#define DB_PATH "/mnt/nvme1n1/db.storage"
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
@@ -51,6 +51,9 @@ key__t max_key;
 int db;
 Node *cache;
 size_t cache_cap;
+pthread_mutex_t *val_lock;
+size_t read_ratio;
+size_t rmw_ratio;
 
 typedef struct {
     size_t op_count;
@@ -83,13 +86,23 @@ void build_cache(size_t layer_num);
 
 int get(key__t key, val__t val, int db_handler);
 
+void update(key__t key, val__t val, int db_handler);
+
+void read_modify_write(key__t key, val__t val, int db_handler);
+
 ptr__t next_node(key__t key, Node *node);
 
 void read_node(ptr__t ptr, Node *node, int db_handler);
 
 void read_log(ptr__t ptr, Log *log, int db_handler);
 
+void write_log(ptr__t ptr, Log *log, int db_handler);
+
 int retrieve_value(ptr__t ptr, val__t val, int db_handler);
+
+void update_value(ptr__t ptr, val__t val, int db_handler);
+
+void read_modify_write_value(ptr__t ptr, val__t val, int db_handler);
 
 int prompt_help();
 
