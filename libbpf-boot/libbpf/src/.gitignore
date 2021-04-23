@@ -1,6 +1,4 @@
-*.o
-*.a
-/libbpf.pc
-/libbpf.so*
-/staticobjs
-/sharedobjs
+sharedobjs/
+staticobjs/
+*.so*
+*.pc
