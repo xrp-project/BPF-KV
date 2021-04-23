@@ -8596,6 +8596,8 @@ static const struct bpf_sec_def section_defs[] = {
 						BPF_LIRC_MODE2),
 	BPF_APROG_SEC("ddp",			BPF_PROG_TYPE_DDP,
 						BPF_DDP),
+	BPF_APROG_SEC("ddp_next",		BPF_PROG_TYPE_DDP,
+						BPF_DDP_NEXT),
 	BPF_APROG_SEC("flow_dissector",		BPF_PROG_TYPE_FLOW_DISSECTOR,
 						BPF_FLOW_DISSECTOR),
 	BPF_EAPROG_SEC("cgroup/bind4",		BPF_PROG_TYPE_CGROUP_SOCK_ADDR,
