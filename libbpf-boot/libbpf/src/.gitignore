@@ -1,4 +1,6 @@
-sharedobjs/
-staticobjs/
-*.so*
-*.pc
+*.o
+*.a
+/libbpf.pc
+/libbpf.so*
+/staticobjs
+/sharedobjs
