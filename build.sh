@@ -1,1 +1,4 @@
-gcc -o db db.c db.h -lpthread -D_GNU_SOURCE
+mkdir build
+cd build
+cmake ..
+cmake --build .

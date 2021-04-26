@@ -7,7 +7,7 @@
 #include <sys/stat.h>
 
 int get_handler(int flag) {
-    int fd = open(DB_PATH, flag, 0755);
+    int fd = open(DB_PATH, flag, 0644);
     if (fd < 0) {
         printf("Fail to open file %s!\n", DB_PATH);
         exit(0);
@@ -17,10 +17,11 @@ int get_handler(int flag) {
 
 void initialize(size_t layer_num, int mode) {
     if (mode == LOAD_MODE) {
-        db = get_handler(O_CREAT|O_TRUNC|O_WRONLY);
+        db = get_handler(O_CREAT|O_TRUNC|O_RDWR);
     } else {
         db = get_handler(O_RDWR|O_DIRECT);
     }
+    io_uring_queue_init(QUEUE_DEPTH, &global_ring, 0);
     
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
     total_node = 1;
@@ -62,11 +63,11 @@ void build_cache(size_t layer_num) {
     }
 
     size_t head = 0, tail = 1;
-    read_node(encode(0), &cache[head], db);
+    read_node(encode(0), &cache[head], db, NULL);
 
     while (tail < entry_num) {
         for (size_t i = 0; i < cache[head].num; i++) {
-            read_node(cache[head].ptr[i], &cache[tail], db);
+            read_node(cache[head].ptr[i], &cache[tail], db, NULL);
             cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
             tail++;
         }
@@ -82,28 +83,11 @@ int terminate() {
     free(layer_cap);
     free(cache);
     close(db);
+    io_uring_queue_exit(&global_ring);
     if (val_lock != NULL) {
         free(val_lock);
     }
     return 0;
-}
-
-int compare_nodes(Node *x, Node *y) {
-    if (x->num != y->num) {
-        printf("num differs %lu %lu\n", x->num, y->num);
-        return 0;
-    }
-    if (x->type != y->type) {
-        printf("type differs %lu %lu\n", x->type, y->type);
-        return 0;
-    }
-    for (size_t i = 0; i < x->num; i++)
-        if (x->key[i] != y->key[i] || x->ptr[i] != y->ptr[i]) {
-            printf("bucket %lu differs x.key %lu y.key %lu x.ptr %lu y.ptr %lu\n",
-                    i, x->key[i], y->key[i], x->ptr[i], y->ptr[i]);
-            return 0;
-        }
-    return 1;
 }
 
 int load(size_t layer_num) {
@@ -111,16 +95,16 @@ int load(size_t layer_num) {
     initialize(layer_num, LOAD_MODE);
 
     // 1. Load the index
-    Node *node, *tmp;
-    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
-    ptr__t next_pos = 1, tmp_ptr = 0;
+    ptr__t next_pos = 1, tmp_ptr = 0, idx = 0;
     for (size_t i = 0; i < layer_num; i++) {
         size_t extent = max_key / layer_cap[i], start_key = 0;
         printf("layer %lu extent %lu\n", i, extent);
         for (size_t j = 0; j < layer_cap[i]; j++) {
+            Node *node, *tmp;
+            if (posix_memalign((void **)&node, 512, sizeof(Node))) {
+                perror("posix_memalign failed");
+                exit(1);
+            }
             node->num = NODE_CAPACITY;
             node->type = (i == layer_num - 1) ? LEAF : INTERNAL;
             size_t sub_extent = extent / node->num;
@@ -131,34 +115,54 @@ int load(size_t layer_num) {
                               encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
                 next_pos++;
             }
-            write(db, node, sizeof(Node));
+            write_node(encode(idx), node, db, &global_ring);
+            write_complete(&global_ring);
             start_key += extent;
+            idx++;
 
             // Sanity check
-            // read_node(tmp_ptr, &tmp);
-            // compare_nodes(&node, &tmp);
-            // tmp_ptr += BLK_SIZE;
+            // if (posix_memalign((void **)&tmp, 512, sizeof(Node))) {
+            //     perror("posix_memalign failed");
+            //     exit(1);
+            // }
+            // read_node(encode(idx-1), tmp, db, &global_ring);
+            // read_complete(&global_ring, 1);
+            // if (memcmp(node, tmp, sizeof(Node)) != 0) {
+            //     printf("Wrong node!\n");
+            // }
+            // free(node);
+            // free(tmp);
         }
     }
 
     // 2. Load the value log
-    Log *log;
-    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
     for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
+        Log *log, *tmp;
+        if (posix_memalign((void **)&log, 512, sizeof(Log))) {
+            perror("posix_memalign failed");
+            exit(1);
+        }
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
             sprintf(log->val[j], "%63lu", i + j);
         }
-        write(db, log, sizeof(Log));
+        write_log(encode(idx), log, db, &global_ring);
+        write_complete(&global_ring);
+        idx++;
 
         // Sanity check
-        // read_log((total_node + i / LOG_CAPACITY) * BLK_SIZE, &log);
+        // if (posix_memalign((void **)&tmp, 512, sizeof(Log))) {
+        //     perror("posix_memalign failed");
+        //     exit(1);
+        // }
+        // read_log(encode(idx-1), tmp, db, &global_ring);
+        // read_complete(&global_ring, 0);
+        // if (memcmp(log, tmp, sizeof(Log)) != 0) {
+        //     printf("Wrong log!\n");
+        // }
+        // free(log);
+        // free(tmp);
     }
 
-    free(log);
-    free(node);
     return terminate();
 }
 
@@ -258,7 +262,7 @@ int get(key__t key, val__t val, int db_handler) {
     }
 
     do {
-        read_node(ptr, node, db_handler);
+        read_node(ptr, node, db_handler, NULL);
         ptr = next_node(key, node);
     } while (node->type != LEAF);
 
@@ -281,7 +285,7 @@ void update(key__t key, val__t val, int db_handler) {
     }
 
     do {
-        read_node(ptr, node, db_handler);
+        read_node(ptr, node, db_handler, NULL);
         ptr = next_node(key, node);
     } while (node->type != LEAF);
 
@@ -305,7 +309,7 @@ void read_modify_write(key__t key, val__t val, int db_handler) {
     }
 
     do {
-        read_node(ptr, node, db_handler);
+        read_node(ptr, node, db_handler, NULL);
         ptr = next_node(key, node);
     } while (node->type != LEAF);
 
@@ -331,28 +335,98 @@ void print_log(ptr__t ptr, Log *log) {
     printf("\n----------------\n");
 }
 
-void read_node(ptr__t ptr, Node *node, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    read(db_handler, node, sizeof(Node));
+void read_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring) {
+    struct iovec *vec = malloc(sizeof(struct iovec));
+    vec->iov_base = node;
+    vec->iov_len = sizeof(Node);
+
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    io_uring_prep_readv(sqe, db_handler, vec, 1, decode(ptr));
+    io_uring_sqe_set_data(sqe, vec);
+    io_uring_submit(ring);
     
     // Debug output
     // print_node(ptr, node);
 }
 
-void read_log(ptr__t ptr, Log *log, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    read(db_handler, log, sizeof(Log));
+void read_log(ptr__t ptr, Log *log, int db_handler, struct io_uring *ring) {
+    struct iovec *vec = malloc(sizeof(struct iovec));
+    vec->iov_base = log;
+    vec->iov_len = sizeof(Node);
+
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    io_uring_prep_readv(sqe, db_handler, vec, 1, decode(ptr));
+    io_uring_sqe_set_data(sqe, vec);
+    io_uring_submit(ring);
 
     // Debug output
     // print_log(ptr, log);
 }
 
-void write_log(ptr__t ptr, Log *log, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    write(db_handler, log, sizeof(Log));
+void read_complete(struct io_uring *ring, int is_node) {
+    struct io_uring_cqe *cqe;
+    int ret = io_uring_wait_cqe(ring, &cqe);
+    if (ret < 0) {
+        perror("io_uring_wait_cqe");
+        return;
+    }
+    if (cqe->res < 0) {
+        fprintf(stderr, "[read_complete] Error in async operation: %s\n", strerror(-cqe->res));
+        return;
+    }
+
+    struct iovec *vec = io_uring_cqe_get_data(cqe);
+    // if (is_node) {
+    //     print_node(0, (Node *)vec->iov_base);
+    // } else {
+    //     print_log(0, (Log *)vec->iov_base);
+    // }
+    free(vec->iov_base);
+    free(vec);
+    io_uring_cqe_seen(ring, cqe);
+}
+
+void write_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring) {
+    struct iovec *vec = malloc(sizeof(struct iovec));
+    vec->iov_base = node;
+    vec->iov_len = sizeof(Node);
+
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    io_uring_prep_writev(sqe, db_handler, vec, 1, decode(ptr));
+    io_uring_sqe_set_data(sqe, vec);
+    io_uring_submit(ring);
+}
+
+void write_log(ptr__t ptr, Log *log, int db_handler, struct io_uring *ring) {
+    struct iovec *vec = malloc(sizeof(struct iovec));
+    vec->iov_base = log;
+    vec->iov_len = sizeof(Log);
+
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    io_uring_prep_writev(sqe, db_handler, vec, 1, decode(ptr));
+    io_uring_sqe_set_data(sqe, vec);
+    io_uring_submit(ring);
 
     // Debug output
     // print_log(ptr, log);
+}
+
+void write_complete(struct io_uring *ring) {
+    struct io_uring_cqe *cqe;
+    int ret = io_uring_wait_cqe(ring, &cqe);
+    if (ret < 0) {
+        perror("io_uring_wait_cqe");
+        return;
+    }
+    if (cqe->res < 0) {
+        fprintf(stderr, "[write_complete] Error in async operation: %s\n", strerror(-cqe->res));
+        return;
+    }
+
+    struct iovec *vec = io_uring_cqe_get_data(cqe);
+    free(vec->iov_base);
+    free(vec);
+    io_uring_cqe_seen(ring, cqe);
 }
 
 int retrieve_value(ptr__t ptr, val__t val, int db_handler) {
@@ -366,7 +440,7 @@ int retrieve_value(ptr__t ptr, val__t val, int db_handler) {
     ptr__t base = ptr & (~mask);
     ptr__t offset = ptr & mask;
 
-    read_log(base, log, db_handler);
+    read_log(base, log, db_handler, NULL);
     memcpy(val, log->val[offset / VAL_SIZE], VAL_SIZE);
 
     return 0;
@@ -384,7 +458,7 @@ void update_value(ptr__t ptr, val__t val, int db_handler) {
     ptr__t offset = ptr & mask;
     size_t log_idx = decode(base) / BLK_SIZE - total_node;
 
-    read_log(base, log, db_handler);
+    read_log(base, log, db_handler, NULL);
     memcpy(log->val[offset / VAL_SIZE], val, VAL_SIZE);
 
     int rc = 0;
@@ -392,7 +466,7 @@ void update_value(ptr__t ptr, val__t val, int db_handler) {
         printf("lock error %d %lu\n", rc, log_idx);
     }
 
-    write_log(base, log, db_handler);
+    write_log(base, log, db_handler, NULL);
 
     pthread_mutex_unlock(&val_lock[log_idx]);
 }
@@ -414,10 +488,10 @@ void read_modify_write_value(ptr__t ptr, val__t val, int db_handler) {
         printf("lock error %d %lu\n", rc, log_idx);
     }
 
-    read_log(base, log, db_handler);
+    read_log(base, log, db_handler, NULL);
     size_t num = atoi(log->val[offset / VAL_SIZE]);
     sprintf(log->val[offset / VAL_SIZE], "%63lu", num / 2);
-    write_log(base, log, db_handler);
+    write_log(base, log, db_handler, NULL);
 
     pthread_mutex_unlock(&val_lock[log_idx]);
 }

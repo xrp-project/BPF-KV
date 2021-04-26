@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <sys/time.h>
+#include <liburing.h>
 
 // Data-level information
 typedef unsigned long meta__t;
@@ -39,10 +40,11 @@ typedef struct _Log {
 } Log;
 
 // Database-level information
-#define DB_PATH "/mnt/nvme1n1/db.storage"
+#define DB_PATH "/mnt/nvme0n1p4/db.storage"
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
+#define QUEUE_DEPTH 256
 
 size_t worker_num;
 size_t total_node;
@@ -54,12 +56,14 @@ size_t cache_cap;
 pthread_mutex_t *val_lock;
 size_t read_ratio;
 size_t rmw_ratio;
+struct io_uring global_ring;
 
 typedef struct {
     size_t op_count;
     size_t index;
     int db_handler;
     size_t timer;
+    struct io_uring local_ring;
 } WorkerArg;
 
 int get_handler(int flag);
@@ -92,11 +96,17 @@ void read_modify_write(key__t key, val__t val, int db_handler);
 
 ptr__t next_node(key__t key, Node *node);
 
-void read_node(ptr__t ptr, Node *node, int db_handler);
+void read_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring);
 
-void read_log(ptr__t ptr, Log *log, int db_handler);
+void read_log(ptr__t ptr, Log *log, int db_handler, struct io_uring *ring);
 
-void write_log(ptr__t ptr, Log *log, int db_handler);
+void read_complete(struct io_uring *ring, int is_node);
+
+void write_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring);
+
+void write_log(ptr__t ptr, Log *log, int db_handler, struct io_uring *ring);
+
+void write_complete(struct io_uring *ring);
 
 int retrieve_value(ptr__t ptr, val__t val, int db_handler);
 
@@ -115,8 +125,6 @@ void start_workers(pthread_t *tids, WorkerArg *args);
 void terminate_workers(pthread_t *tids, WorkerArg *args);
 
 int terminate();
-
-int compare_nodes(Node *x, Node *y);
 
 void print_node(ptr__t ptr, Node *node);
 
