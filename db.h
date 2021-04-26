@@ -56,6 +56,7 @@ typedef struct {
     struct spdk_nvme_qpair *qpair;
     struct timeval start;
     long *timer;
+    size_t thread;
 } Request;
 
 typedef struct {
@@ -66,7 +67,6 @@ typedef struct {
     size_t counter;
 } WorkerArg;
 
-#define BDEV_NAME "NVMe2n1"
 #define DB_PATH "./db.storage"
 #define LOAD_MODE 0
 #define RUN_MODE 1
@@ -88,6 +88,7 @@ struct spdk_nvme_ctrlr *global_ctrlr = NULL;
 struct spdk_nvme_ns	   *global_ns    = NULL;
 struct spdk_nvme_qpair *global_qpair = NULL;
 size_t *global_counter = NULL;
+struct timeval start_tv, end_tv;
 
 Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff, key__t key, size_t *counter, long *timer);
 

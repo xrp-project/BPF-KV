@@ -261,15 +261,17 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
 }
 
 void start_workers(pthread_t *tids, WorkerArg *args) {
-    for (size_t i = 0; i < worker_num; i++) {
-        pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
+    for (size_t i = 1; i < worker_num; i++) {
+        // pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
+        spdk_env_thread_launch_pinned(args[i].index, subtask, (void*)&args[i]);
     }
 }
 
 void terminate_workers(pthread_t *tids, WorkerArg *args) {
-    for (size_t i = 0; i < worker_num; i++) {
-        pthread_join(tids[i], NULL);
-    }
+    // for (size_t i = 0; i < worker_num; i++) {
+    //     pthread_join(tids[i], NULL);
+    // }
+    spdk_env_thread_wait_all();
 }
 
 void read_complete(void *arg, const struct spdk_nvme_cpl *completion) {
@@ -310,7 +312,7 @@ void traverse_complete(void *arg, const struct spdk_nvme_cpl *completion) {
             val__t val;
             memcpy(val, ((Log *)req->buff)->val[req->ofs / VAL_SIZE], VAL_SIZE);
             if (req->key != atoi(val)) {
-                printf("Error! key: %lu val: %s\n", req->key, val);
+                printf("Errror! key: %lu val: %s\n", req->key, val);
             }            
 
             struct timeval end;
@@ -321,6 +323,12 @@ void traverse_complete(void *arg, const struct spdk_nvme_cpl *completion) {
             // __atomic_fetch_add(req->timer, latency, __ATOMIC_SEQ_CST);
             (*(req->counter))++;
             (*(req->timer)) += latency;
+            // printf("thread %lu start %ld offset %ld end %ld latency %ld us\n", 
+            //         req->thread,
+            //         1000000 * req->start.tv_sec + req->start.tv_usec,
+            //         1000000 * (req->start.tv_sec - start_tv.tv_sec) + (req->start.tv_usec - start_tv.tv_usec),
+            //         1000000 * end.tv_sec + end.tv_usec,
+            //         latency);
 
             spdk_free(req->buff);
             free(req);
@@ -365,20 +373,23 @@ int run() {
     build_cache(layer_cnt > cache_layer ? cache_layer : layer_cnt);
 
     worker_num = thread_cnt;
-    struct timeval start, end;
     pthread_t tids[worker_num];
     WorkerArg args[worker_num];
 
     initialize_workers(args, request_cnt);
 
-    gettimeofday(&start, NULL);
+    gettimeofday(&start_tv, NULL);
+    printf("timer start %ld us\n", 1000000 * start_tv.tv_sec + start_tv.tv_usec);
     start_workers(tids, args);
+    subtask((void *)&args[0]); // the main core
     terminate_workers(tids, args);
-    gettimeofday(&end, NULL);
+    gettimeofday(&end_tv, NULL);
+    printf("timer end %ld us\n", 1000000 * end_tv.tv_sec + end_tv.tv_usec);
 
     long total_latency = 0;
     for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
-    long run_time = 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
+    long run_time = 1000000 * (end_tv.tv_sec - start_tv.tv_sec) + (end_tv.tv_usec - start_tv.tv_usec);
+    printf("duration %ld us\n", run_time);
 
     printf("Average throughput: %f op/s latency: %f usec\n", 
             (double)request_cnt / run_time * 1000000, (double)total_latency / request_cnt);
@@ -406,11 +417,12 @@ void *subtask(void *args) {
         wait_for_completion(r->qpair, NULL, 0);
     }
     wait_for_completion(r->qpair, &(r->counter), r->op_count);
-    printf("thread %ld finishes %ld ops\n", r->index, r->counter);
+    // printf("thread %ld finishes %ld ops\n", r->index, r->counter);
 }
 
 int get(key__t key, val__t val, WorkerArg *r) {
     Request *req = init_request(global_ns, r->qpair, NULL, key, &(r->counter), &(r->timer));
+    req->thread = r->index;
     gettimeofday(&req->start, NULL);
 
     // printf("get key: %lu\n", key);
@@ -471,6 +483,9 @@ void prompt_help() {
 void parse_args(int argc, char *argv[]) {
     if (argc % 2 != 1) {
         printf("Wrong argc %d\n", argc);
+        for (size_t i = 0; i < argc; i++) {
+            printf("%s\n", argv[i]);
+        }
         prompt_help();
     } else {
         for (size_t i = 1; i < argc; i += 2) {
@@ -500,7 +515,7 @@ void parse_args(int argc, char *argv[]) {
 
 bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	           struct spdk_nvme_ctrlr_opts *opts) {
-	return strcmp(trid->traddr, "0000:01:00.0") == 0;
+	return strcmp(trid->traddr, "0000:03:00.0") == 0;
 }
 
 void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
@@ -521,6 +536,8 @@ int main(int argc, char *argv[]) {
 	spdk_env_opts_init(&opts);
 	opts.name = "simple_kv";
 	opts.shm_id = 0;
+    opts.main_core = 0;
+    opts.core_mask = "[0-5]"; // mars server has only 6 cores
 	if (spdk_env_init(&opts) < 0) {
 		fprintf(stderr, "Unable to initialize SPDK env\n");
 		return 1;
