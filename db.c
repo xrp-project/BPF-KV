@@ -63,11 +63,12 @@ void build_cache(size_t layer_num) {
     }
 
     size_t head = 0, tail = 1;
-    read_node(encode(0), &cache[head], db, NULL);
-
+    read_node(encode(0), &cache[head], db, &global_ring);
+    read_complete(&global_ring, 1);
     while (tail < entry_num) {
         for (size_t i = 0; i < cache[head].num; i++) {
-            read_node(cache[head].ptr[i], &cache[tail], db, NULL);
+            read_node(cache[head].ptr[i], &cache[tail], db, &global_ring);
+            read_complete(&global_ring, 1);
             cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
             tail++;
         }
@@ -115,7 +116,7 @@ int load(size_t layer_num) {
                               encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
                 next_pos++;
             }
-            write_node(encode(idx), node, db, &global_ring);
+            write_node(encode(idx * BLK_SIZE), node, db, &global_ring);
             write_complete(&global_ring);
             start_key += extent;
             idx++;
@@ -145,7 +146,7 @@ int load(size_t layer_num) {
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
             sprintf(log->val[j], "%63lu", i + j);
         }
-        write_log(encode(idx), log, db, &global_ring);
+        write_log(encode(idx * BLK_SIZE), log, db, &global_ring);
         write_complete(&global_ring);
         idx++;
 
@@ -172,6 +173,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
         args[i].db_handler = get_handler(O_RDWR|O_DIRECT);
         args[i].timer = 0;
+        io_uring_queue_init(QUEUE_DEPTH, &args[i].local_ring, 0);
     }
 }
 
@@ -228,7 +230,7 @@ void *subtask(void *args) {
         int type = rand() % 100;
         if (type < read_ratio) {
             gettimeofday(&start, NULL);
-            get(key, val, r->db_handler);
+            get(key, val, r);
             gettimeofday(&end, NULL);
         } else if (type < read_ratio + rmw_ratio) {
             gettimeofday(&start, NULL);    
@@ -246,7 +248,7 @@ void *subtask(void *args) {
     }
 }
 
-int get(key__t key, val__t val, int db_handler) {
+int get(key__t key, val__t val, WorkerArg *r) {
     ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
     Node *node;
 
@@ -255,6 +257,9 @@ int get(key__t key, val__t val, int db_handler) {
         exit(1);
     }
 
+    // printf("key %ld\n", key);
+    // print_node(0, (Node *)ptr);
+
     if (cache_cap > 0) {
         do {
             ptr = next_node(key, (Node *)ptr);
@@ -262,11 +267,13 @@ int get(key__t key, val__t val, int db_handler) {
     }
 
     do {
-        read_node(ptr, node, db_handler, NULL);
+        read_node(ptr, node, r->db_handler, &(r->local_ring));
+        read_complete(&(r->local_ring), 1);
         ptr = next_node(key, node);
     } while (node->type != LEAF);
 
-    return retrieve_value(ptr, val, db_handler);
+    free(node);
+    return retrieve_value(ptr, val, r);
 }
 
 void update(key__t key, val__t val, int db_handler) {
@@ -381,7 +388,6 @@ void read_complete(struct io_uring *ring, int is_node) {
     // } else {
     //     print_log(0, (Log *)vec->iov_base);
     // }
-    free(vec->iov_base);
     free(vec);
     io_uring_cqe_seen(ring, cqe);
 }
@@ -429,7 +435,7 @@ void write_complete(struct io_uring *ring) {
     io_uring_cqe_seen(ring, cqe);
 }
 
-int retrieve_value(ptr__t ptr, val__t val, int db_handler) {
+int retrieve_value(ptr__t ptr, val__t val, WorkerArg *r) {
     Log *log;
     if (posix_memalign((void **)&log, 512, sizeof(Log))) {
         perror("posix_memalign failed");
@@ -440,8 +446,10 @@ int retrieve_value(ptr__t ptr, val__t val, int db_handler) {
     ptr__t base = ptr & (~mask);
     ptr__t offset = ptr & mask;
 
-    read_log(base, log, db_handler, NULL);
+    read_log(base, log, r->db_handler, &(r->local_ring));
+    read_complete(&(r->local_ring), 0);
     memcpy(val, log->val[offset / VAL_SIZE], VAL_SIZE);
+    free(log);
 
     return 0;
 }
@@ -497,6 +505,7 @@ void read_modify_write_value(ptr__t ptr, val__t val, int db_handler) {
 }
 
 ptr__t next_node(key__t key, Node *node) {
+    // print_node(0, node);
     for (size_t i = 0; i < node->num; i++) {
         if (key < node->key[i]) {
             return node->ptr[i - 1];

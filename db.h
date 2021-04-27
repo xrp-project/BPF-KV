@@ -88,7 +88,7 @@ void *subtask(void *args);
 
 void build_cache(size_t layer_num);
 
-int get(key__t key, val__t val, int db_handler);
+int get(key__t key, val__t val, WorkerArg *r);
 
 void update(key__t key, val__t val, int db_handler);
 
@@ -108,7 +108,7 @@ void write_log(ptr__t ptr, Log *log, int db_handler, struct io_uring *ring);
 
 void write_complete(struct io_uring *ring);
 
-int retrieve_value(ptr__t ptr, val__t val, int db_handler);
+int retrieve_value(ptr__t ptr, val__t val, WorkerArg *r);
 
 void update_value(ptr__t ptr, val__t val, int db_handler);
 
