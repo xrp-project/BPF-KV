@@ -173,6 +173,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
         args[i].db_handler = get_handler(O_RDWR|O_DIRECT);
         args[i].timer = 0;
+        args[i].counter = 0;
         io_uring_queue_init(QUEUE_DEPTH, &args[i].local_ring, 0);
     }
 }
@@ -229,9 +230,10 @@ void *subtask(void *args) {
 
         int type = rand() % 100;
         if (type < read_ratio) {
-            gettimeofday(&start, NULL);
+            if (i - r->counter > QUEUE_DEPTH) {
+                wait_for_completion(&(r->local_ring), &(r->counter), i-1);
+            }
             get(key, val, r);
-            gettimeofday(&end, NULL);
         } else if (type < read_ratio + rmw_ratio) {
             gettimeofday(&start, NULL);    
             read_modify_write(key, val, r->db_handler);
@@ -244,18 +246,13 @@ void *subtask(void *args) {
             gettimeofday(&end, NULL);
         }
 
-        r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec); 
     }
+    wait_for_completion(&(r->local_ring), &(r->counter), r->op_count);
 }
 
 int get(key__t key, val__t val, WorkerArg *r) {
     ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
-    Node *node;
-
-    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
+    Request *req = init_request(key, r);
 
     // printf("key %ld\n", key);
     // print_node(0, (Node *)ptr);
@@ -266,14 +263,86 @@ int get(key__t key, val__t val, WorkerArg *r) {
         } while (!is_file_offset(ptr));
     }
 
-    do {
-        read_node(ptr, node, r->db_handler, &(r->local_ring));
-        read_complete(&(r->local_ring), 1);
-        ptr = next_node(key, node);
-    } while (node->type != LEAF);
+    traverse(ptr, req);
 
-    free(node);
-    return retrieve_value(ptr, val, r);
+    return 0;
+    // do {
+    //     read_node(ptr, node, r->db_handler, &(r->local_ring));
+    //     read_complete(&(r->local_ring), 1);
+    //     ptr = next_node(key, node);
+    // } while (node->type != LEAF);
+
+    // return retrieve_value(ptr, val, r);
+}
+
+void traverse(ptr__t ptr, Request *req) {
+    struct io_uring *ring = &(req->warg->local_ring);
+    struct iovec *vec = &(req->vec);
+    int fd = req->warg->db_handler;
+
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    io_uring_prep_readv(sqe, fd, vec, 1, decode(ptr));
+    io_uring_sqe_set_data(sqe, req);
+    io_uring_submit(ring);
+}
+
+void traverse_complete(struct io_uring *ring) {
+    struct io_uring_cqe *cqe;
+    int ret = io_uring_wait_cqe(ring, &cqe);
+    if (ret < 0) {
+        perror("io_uring_wait_cqe");
+        return;
+    }
+    if (cqe->res < 0) {
+        fprintf(stderr, "[read_complete] Error in async operation: %s\n", strerror(-cqe->res));
+        return;
+    }
+
+    Request *req = io_uring_cqe_get_data(cqe);
+    io_uring_cqe_seen(ring, cqe);
+
+    if (req->is_value) {
+        val__t val;
+        Log *log = (Log *)req->vec.iov_base;
+        memcpy(val, log->val[req->ofs / VAL_SIZE], VAL_SIZE);
+        if (req->key != atoi(val)) {
+            printf("Errror! key: %lu val: %s\n", req->key, val);
+        }            
+
+        struct timeval end;
+        gettimeofday(&end, NULL);
+        size_t latency = 1000000 * (end.tv_sec - req->start.tv_sec) + (end.tv_usec - req->start.tv_usec);
+
+        // __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
+        // __atomic_fetch_add(req->timer, latency, __ATOMIC_SEQ_CST);
+        req->warg->counter++;
+        req->warg->timer += latency;
+        // printf("thread %lu start %ld offset %ld end %ld latency %ld us\n", 
+        //         req->thread,
+        //         1000000 * req->start.tv_sec + req->start.tv_usec,
+        //         1000000 * (req->start.tv_sec - start_tv.tv_sec) + (req->start.tv_usec - start_tv.tv_usec),
+        //         1000000 * end.tv_sec + end.tv_usec,
+        //         latency);
+
+        free(log);
+        free(req);
+    } else {
+        Node *node = (Node *)req->vec.iov_base;
+        ptr__t ptr = next_node(req->key, node);
+        if (node->type == LEAF) {
+            req->is_value = true;
+            ptr__t mask = BLK_SIZE - 1;
+            req->ofs = ptr & mask;
+            ptr &= (~mask);
+        }
+        traverse(ptr, req);
+    }
+}
+
+void wait_for_completion(struct io_uring *ring, size_t *counter, size_t target) {
+    do {
+        traverse_complete(ring);
+    } while (*counter != target);
 }
 
 void update(key__t key, val__t val, int db_handler) {
@@ -340,6 +409,23 @@ void print_log(ptr__t ptr, Log *log) {
         printf("%s\n", log->val[i]);
     }
     printf("\n----------------\n");
+}
+
+Request *init_request(key__t key, WorkerArg *warg) {
+    Request *req = (Request *)malloc(sizeof(Request));
+
+    req->vec.iov_len = BLK_SIZE;
+    if (posix_memalign((void **)&(req->vec.iov_base), BLK_SIZE, BLK_SIZE)) {
+        perror("posix_memalign failed");
+        exit(1);
+    }
+
+    req->key = key;
+    req->warg = warg;
+    req->is_value = false;
+    gettimeofday(&(req->start), NULL);    
+
+    return req;
 }
 
 void read_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring) {

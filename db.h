@@ -44,7 +44,7 @@ typedef struct _Log {
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
-#define QUEUE_DEPTH 256
+#define QUEUE_DEPTH 128
 
 size_t worker_num;
 size_t total_node;
@@ -64,7 +64,17 @@ typedef struct {
     int db_handler;
     size_t timer;
     struct io_uring local_ring;
+    size_t counter;
 } WorkerArg;
+
+typedef struct {
+    key__t key;
+    ptr__t ofs;
+    struct iovec vec;
+    bool is_value;
+    struct timeval start;
+    WorkerArg *warg;
+} Request;
 
 int get_handler(int flag);
 
@@ -96,11 +106,19 @@ void read_modify_write(key__t key, val__t val, int db_handler);
 
 ptr__t next_node(key__t key, Node *node);
 
+Request *init_request(key__t key, WorkerArg *warg);
+
 void read_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring);
 
 void read_log(ptr__t ptr, Log *log, int db_handler, struct io_uring *ring);
 
 void read_complete(struct io_uring *ring, int is_node);
+
+void traverse(ptr__t ptr, Request *req);
+
+void traverse_complete(struct io_uring *ring);
+
+void wait_for_completion(struct io_uring *ring, size_t *counter, size_t target);
 
 void write_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring);
 
