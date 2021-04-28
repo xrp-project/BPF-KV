@@ -1,10 +1,16 @@
 # SimpleKV
 
+* Prerequisite
+```
+$ git clone https://github.com/axboe/liburing.git
+$ cd liburing
+$ ./configure
+$ sudo make install
+```
+
 * Build
 ```
 $ ./build.sh
-or
-$ gcc -o db db.c db.h -lpthread -D_GNU_SOURCE
 ```
 
 * Run
