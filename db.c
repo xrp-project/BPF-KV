@@ -52,6 +52,8 @@ void initialize(size_t layer_num, int mode) {
 }
 
 void build_cache(size_t layer_num) {
+    if (layer_num == 0) return 0;
+    
     size_t entry_num = 0;
     for (size_t i = 0; i < layer_num; i++) {
         entry_num += layer_cap[i];
@@ -194,7 +196,7 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 int run(size_t layer_num, size_t request_num, size_t thread_num) {
     printf("Run the test of %lu requests\n", request_num);
     initialize(layer_num, RUN_MODE);
-    build_cache(layer_num > 3 ? 3 : layer_num);
+    build_cache(layer_num > cache_layer ? cache_layer : layer_num);
 
     worker_num = thread_num;
     struct timeval start, end;
@@ -261,6 +263,13 @@ int get(key__t key, val__t val, WorkerArg *r) {
         do {
             ptr = next_node(key, (Node *)ptr);
         } while (!is_file_offset(ptr));
+    }
+
+    if (cache_layer == layer_cnt) {
+        req->is_value = true;
+        ptr__t mask = BLK_SIZE - 1;
+        req->ofs = ptr & mask;
+        ptr &= (~mask);
     }
 
     traverse(ptr, req);
@@ -602,7 +611,7 @@ ptr__t next_node(key__t key, Node *node) {
 
 int prompt_help() {
     printf("Usage: ./db --load number_of_layers\n");
-    printf("or     ./db --run number_of_layers number_of_requests number_of_threads read_ratio rmw_ratio\n");
+    printf("or     ./db --run number_of_layers number_of_requests number_of_threads read_ratio rmw_ratio cache_layers\n");
     return 0;
 }
 
@@ -612,12 +621,14 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[1], "--load") == 0) {
         return load(atoi(argv[2]));
     } else if (strcmp(argv[1], "--run") == 0) {
-        if (argc < 7) {
+        if (argc < 8) {
             return prompt_help();
         }
+        layer_cnt = atoi(argv[2]);
         read_ratio = atoi(argv[5]);
         rmw_ratio = atoi(argv[6]);
-        return run(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
+        cache_layer = atoi(argv[7]);
+        return run(layer_cnt, atoi(argv[3]), atoi(argv[4]));
     } else {
         return prompt_help();
     }

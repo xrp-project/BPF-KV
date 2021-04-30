@@ -40,12 +40,14 @@ typedef struct _Log {
 } Log;
 
 // Database-level information
-#define DB_PATH "/mnt/nvme1n1/db.storage"
+#define DB_PATH "/mnt/nvme0n1/db.storage"
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
-#define QUEUE_DEPTH 128
+#define QUEUE_DEPTH 1
 
+size_t layer_cnt;
+size_t cache_layer = 3;
 size_t worker_num;
 size_t total_node;
 size_t *layer_cap;
