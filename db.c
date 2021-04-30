@@ -46,6 +46,8 @@ void initialize(size_t layer_num, int mode) {
 }
 
 void build_cache(size_t layer_num) {
+    if (layer_num == 0) return;
+    
     size_t entry_num = 0;
     for (size_t i = 0; i < layer_num; i++) {
         entry_num += layer_cap[i];
@@ -497,6 +499,8 @@ void parse_args(int argc, char *argv[]) {
                 thread_cnt = atoi(argv[i+1]);
             } else if (strcmp(argv[i], "--request") == 0) {
                 request_cnt = atoi(argv[i+1]);
+            } else if (strcmp(argv[i], "--cache") == 0) {
+                cache_layer = atoi(argv[i+1]);
             } else {
                 printf("Unsupported option %s\n", argv[i]);
                 prompt_help();
@@ -515,7 +519,7 @@ void parse_args(int argc, char *argv[]) {
 
 bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	           struct spdk_nvme_ctrlr_opts *opts) {
-	return strcmp(trid->traddr, "0000:03:00.0") == 0;
+	return strcmp(trid->traddr, "0000:01:00.0") == 0;
 }
 
 void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
