@@ -416,7 +416,7 @@ void *subtask(void *args) {
         val__t val;
 
         get(key, val, r);
-        wait_for_completion(r->qpair, NULL, 0);
+        wait_for_completion(r->qpair, &(r->counter), i+1);
     }
     wait_for_completion(r->qpair, &(r->counter), r->op_count);
     // printf("thread %ld finishes %ld ops\n", r->index, r->counter);
@@ -479,6 +479,7 @@ void prompt_help() {
     printf("                 --layer number of layers\n");
     printf("                 --thread number of threads\n");
     printf("                 --request number of requests\n");
+    printf("                 --cache number of cached layers\n");
     exit(0);
 }
 
@@ -519,7 +520,7 @@ void parse_args(int argc, char *argv[]) {
 
 bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	           struct spdk_nvme_ctrlr_opts *opts) {
-	return strcmp(trid->traddr, "0000:01:00.0") == 0;
+	return strcmp(trid->traddr, "0000:05:00.0") == 0;
 }
 
 void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
