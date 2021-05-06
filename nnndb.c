@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <linux/treenvme_ioctl.h>
+//#define DEBUG 1
+
 void print_log(ptr__t ptr, Log *log);
 
 int get_handler(int flag) {
@@ -226,12 +228,16 @@ void *subtask(void *args) {
 
         gettimeofday(&start, NULL);
         get(key, val, r->db_handler, r->log_handler);
+#ifdef DEBUG
         printf("KEY:%lu", key);
 	printf("VAL:%lu\n", atoi(val));
+#endif
         gettimeofday(&end, NULL);
         r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
-
-        if (key != atoi(val)) {
+#ifdef DEBUG
+        printf("DIFF:%lu\n", atoi(val) - key);
+#endif
+	if (key != atoi(val)) {
             printf("Error! key: %lu val: %s thrd: %ld\n", key, val, r->index);
         }       
     }
@@ -240,7 +246,8 @@ void *subtask(void *args) {
 int get(key__t key, val__t val, int db_handler, int log_handler) {
     //ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
     ptr__t ptr = encode(0);
-    Node *node = malloc(sizeof(Node));
+    Node *node;
+    //Node *node = malloc(sizeof(Node));
 
     if (posix_memalign((void **)&node, 512, sizeof(Node))) {
         perror("posix_memalign failed");
@@ -269,6 +276,7 @@ int get(key__t key, val__t val, int db_handler, int log_handler) {
     //tbl->arr[0] = key;
     //ioctl(db_handler, TREENVME_IOCTL_REGISTER_BLOCKTABLE, tbl);
     memcpy(node, &key, sizeof(key));
+
     read_node(ptr, node, db_handler);
     //print_node(ptr, node);
     //ptr = next_node(key, node); 
