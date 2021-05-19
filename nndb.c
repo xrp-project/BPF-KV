@@ -40,6 +40,7 @@ void initialize(size_t layer_num, int mode) {
         logfn = get_log_handler(O_RDONLY);
     }
 
+    ioctl(db, TREENVME_IOCTL_IO_CMD);
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
     total_node = 1;
     layer_cap[0] = 1;
@@ -215,7 +216,7 @@ int run(size_t layer_num, size_t request_num, size_t thread_num) {
 void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
     struct timeval start, end;
-
+    struct timespec tps, tpe;
     srand(r->index);
     printf("thread %ld op_count %ld\n", r->index, r->op_count);
     for (size_t i = 0; i < r->op_count; i++) {
@@ -223,10 +224,13 @@ void *subtask(void *args) {
         val__t val;
 
         gettimeofday(&start, NULL);
+	clock_gettime(CLOCK_REALTIME, &tps);
         get(key, val, r->db_handler, r->log_handler);
+	clock_gettime(CLOCK_REALTIME, &tpe);
         gettimeofday(&end, NULL);
         r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
-
+        unsigned long btt = (tpe.tv_nsec - tps.tv_nsec);
+	printf("%lu\n", btt);
         if (key != atoi(val)) {
             printf("Error! key: %lu val: %s thrd: %ld\n", key, val, r->index);
         }       
@@ -234,7 +238,8 @@ void *subtask(void *args) {
 }
 
 int get(key__t key, val__t val, int db_handler, int log_handler) {
-    ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+    //ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+    ptr__t ptr = encode(0);
     Node *node = malloc(sizeof(Node));
 
     if (posix_memalign((void **)&node, 512, sizeof(Node))) {
@@ -267,7 +272,7 @@ int get(key__t key, val__t val, int db_handler, int log_handler) {
     read_node(ptr, node, db_handler);
     //print_node(ptr, node);
     ptr = next_node(key, node); 
-    printf("FINALPTR: %d\n", ptr);
+    //printf("FINALPTR: %d\n", ptr);
 
     return retrieve_value(ptr, val, log_handler);
 }
@@ -291,16 +296,16 @@ void print_log(ptr__t ptr, Log *log) {
 }
 
 void read_node(ptr__t ptr, Node *node, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    read(db_handler, node, sizeof(Node));
+    //lseek(db_handler, decode(ptr), SEEK_SET);
+    pread(db_handler, node, sizeof(Node), decode(ptr));
     
     // Debug output
     // print_node(ptr, node);
 }
 
 void read_log(ptr__t ptr, Log *log, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    read(db_handler, log, sizeof(Log));
+    //lseek(db_handler, decode(ptr), SEEK_SET);
+    pread(db_handler, log, sizeof(Log), decode(ptr));
 
     // Debug output
     // print_log(ptr, log);
