@@ -372,7 +372,7 @@ int run() {
                     layer_cnt, request_cnt, thread_cnt);
 
     initialize(layer_cnt, RUN_MODE);
-    build_cache(layer_cnt > cache_layer ? cache_layer : layer_cnt);
+    // build_cache(layer_cnt > cache_layer ? cache_layer : layer_cnt);
 
     worker_num = thread_cnt;
     pthread_t tids[worker_num];
@@ -434,14 +434,15 @@ int get(key__t key, val__t val, WorkerArg *r) {
         do {
             ptr = next_node(key, (Node *)ptr);
         } while (!is_file_offset(ptr));
+
+        if (cache_layer == layer_cnt) {
+            req->is_value = true;
+            ptr__t mask = BLK_SIZE - 1;
+            req->ofs = ptr & mask;
+            ptr &= (~mask);
+        }
     }
 
-    if (cache_layer == layer_cnt) {
-        req->is_value = true;
-        ptr__t mask = BLK_SIZE - 1;
-        req->ofs = ptr & mask;
-        ptr &= (~mask);
-    }
     spdk_read(req, decode(ptr) / BLK_SIZE, 1, traverse_complete);
 
     return 0;
@@ -520,7 +521,7 @@ void parse_args(int argc, char *argv[]) {
 
 bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	           struct spdk_nvme_ctrlr_opts *opts) {
-	return strcmp(trid->traddr, "0000:05:00.0") == 0;
+	return strcmp(trid->traddr, "0000:01:00.0") == 0;
 }
 
 void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
