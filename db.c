@@ -7,7 +7,7 @@
 #include <sys/stat.h>
 
 int get_handler(int flag) {
-    int fd = open(DB_PATH, flag | O_DIRECT, 0755);
+    int fd = open(DB_PATH, flag, 0755);
     if (fd < 0) {
         printf("Fail to open file %s!\n", DB_PATH);
         exit(0);
@@ -28,7 +28,7 @@ void initialize(size_t layer_num, int mode) {
     if (mode == LOAD_MODE) {
         db = get_load_handler(O_CREAT|O_TRUNC|O_WRONLY);
     } else {
-        db = get_handler(O_RDONLY);
+        db = get_handler(O_RDONLY|O_DIRECT);
     }
     
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
@@ -157,7 +157,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
-        args[i].db_handler = get_handler(O_RDONLY);
+        args[i].db_handler = get_handler(O_RDONLY|O_DIRECT);
         args[i].timer = 0;
     }
 }
