@@ -1,14 +1,20 @@
 # SimpleKV
 
+* Prerequisite
+```
+$ git clone https://github.com/axboe/liburing.git
+$ cd liburing
+$ ./configure
+$ sudo make install
+```
+
 * Build
 ```
 $ ./build.sh
-or
-$ gcc -o db db.c db.h -lpthread -D_GNU_SOURCE
 ```
 
 * Run
 ```
-$ ./db --load number_of_layers
-$ ./db --run number_of_layers number_of_requests num_of_threads
+$ ./build/db --load number_of_layers
+$ ./build/db --run number_of_layers number_of_requests number_of_threads read_ratio rmw_ratio cache_layers
 ```
