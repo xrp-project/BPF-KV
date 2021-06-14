@@ -5,4 +5,6 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_FLAGS "-g -D_GNU_SOURCE")
 
 add_executable(db db.c)
+add_executable(db-bpf db-bpf.c)
 target_link_libraries(db uring pthread)
+target_link_libraries(db-bpf uring pthread)
