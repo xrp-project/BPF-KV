@@ -253,12 +253,16 @@ int load() {
 }
 
 void initialize_workers(WorkerArg *args, size_t total_op_count) {
+    args[0].histogram = (long *)malloc(total_op_count * sizeof(long));
+    size_t offset = 0;
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
 	    args[i].qpair = NULL;
         args[i].timer = 0;
         args[i].counter = 0;
+        args[i].histogram = args[0].histogram + offset;
+        offset += args[i].op_count;
     }
 }
 
@@ -317,12 +321,13 @@ void traverse_complete(void *arg, const struct spdk_nvme_cpl *completion) {
                 printf("Errror! key: %lu val: %s\n", req->key, val);
             }            
 
-            struct timeval end;
-            gettimeofday(&end, NULL);
-            size_t latency = 1000000 * (end.tv_sec - req->start.tv_sec) + (end.tv_usec - req->start.tv_usec);
+            struct timespec end;
+            clock_gettime(CLOCK_REALTIME, &end);
+            size_t latency = 1000000000 * (end.tv_sec - req->start.tv_sec) + (end.tv_nsec - req->start.tv_nsec);
 
             // __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
             // __atomic_fetch_add(req->timer, latency, __ATOMIC_SEQ_CST);
+            req->histogram[*(req->counter)] = latency;
             (*(req->counter))++;
             (*(req->timer)) += latency;
             // printf("thread %lu start %ld offset %ld end %ld latency %ld us\n", 
@@ -366,6 +371,33 @@ void spdk_read(Request *req, size_t lba, size_t nlba, spdk_nvme_cmd_cb cb_fn) {
     }
 }
 
+int cmp(const void *a, const void *b) {
+    return *(long *)a - *(long *)b;
+}
+
+void print_tail_latency(WorkerArg* args, size_t request_num) {
+    long *histogram = args[0].histogram;
+    qsort(histogram, request_num, sizeof(long), cmp);
+
+    long sum95 = 0, sum99 = 0, sum999 = 0;
+    long idx95 = request_num * 0.95, idx99 = request_num * 0.99, idx999 = request_num * 0.999;
+    // printf("idx95: %ld idx99: %ld idx999: %ld\n", idx95, idx99, idx999);
+    // for (size_t i = 0; i < request_num; i++) {
+    //     printf("%ld ", histogram[i]);
+    // }
+    // printf("\n");
+
+    for (size_t i = idx95; i < request_num; i++) {
+        sum95  += histogram[i];
+        sum99  += i >= idx99  ? histogram[i] : 0;
+        sum999 += i >= idx999 ? histogram[i] : 0;
+    }
+
+    printf("95%%   latency: %f us\n", (double)sum95  / (request_num - idx95)  / 1000);
+    printf("99%%   latency: %f us\n", (double)sum99  / (request_num - idx99)  / 1000);
+    printf("99.9%% latency: %f us\n", (double)sum999 / (request_num - idx999) / 1000);
+}
+
 // int run(size_t layer_num, size_t request_num, size_t thread_num) {
 int run() {
     printf("Run: %lu layers, %lu requests, and %lu threads\n", 
@@ -380,21 +412,19 @@ int run() {
 
     initialize_workers(args, request_cnt);
 
-    gettimeofday(&start_tv, NULL);
-    printf("timer start %ld us\n", 1000000 * start_tv.tv_sec + start_tv.tv_usec);
+    clock_gettime(CLOCK_REALTIME, &start_tv);
     start_workers(tids, args);
     subtask((void *)&args[0]); // the main core
     terminate_workers(tids, args);
-    gettimeofday(&end_tv, NULL);
-    printf("timer end %ld us\n", 1000000 * end_tv.tv_sec + end_tv.tv_usec);
+    clock_gettime(CLOCK_REALTIME, &end_tv);
 
     long total_latency = 0;
     for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
-    long run_time = 1000000 * (end_tv.tv_sec - start_tv.tv_sec) + (end_tv.tv_usec - start_tv.tv_usec);
-    printf("duration %ld us\n", run_time);
+    long run_time = 1000000000 * (end_tv.tv_sec - start_tv.tv_sec) + (end_tv.tv_nsec - start_tv.tv_nsec);
 
     printf("Average throughput: %f op/s latency: %f usec\n", 
-            (double)request_cnt / run_time * 1000000, (double)total_latency / request_cnt);
+            (double)request_cnt / run_time * 1000000000, (double)total_latency / request_cnt / 1000);
+    print_tail_latency(args, request_cnt);
 
     return terminate();
 }
@@ -424,8 +454,8 @@ void *subtask(void *args) {
 
 int get(key__t key, val__t val, WorkerArg *r) {
     Request *req = init_request(global_ns, r->qpair, NULL, key, &(r->counter), &(r->timer));
-    req->thread = r->index;
-    gettimeofday(&req->start, NULL);
+    req->histogram = r->histogram;
+    clock_gettime(CLOCK_REALTIME, &req->start);
 
     // printf("get key: %lu\n", key);
     ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);

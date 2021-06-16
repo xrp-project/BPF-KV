@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <pthread.h>
-#include <sys/time.h>
+#include <time.h>
 #include "spdk/stdinc.h"
 #include "spdk/nvme.h"
 #include "spdk/vmd.h"
@@ -54,9 +54,9 @@ typedef struct {
     bool is_value;
     struct spdk_nvme_ns	*ns;
     struct spdk_nvme_qpair *qpair;
-    struct timeval start;
+    struct timespec start;
     long *timer;
-    size_t thread;
+    long *histogram;
 } Request;
 
 typedef struct {
@@ -65,6 +65,7 @@ typedef struct {
     struct spdk_nvme_qpair *qpair;
     long timer;
     size_t counter;
+    long *histogram;
 } WorkerArg;
 
 #define DB_PATH "./db.storage"
@@ -88,7 +89,7 @@ struct spdk_nvme_ctrlr *global_ctrlr = NULL;
 struct spdk_nvme_ns	   *global_ns    = NULL;
 struct spdk_nvme_qpair *global_qpair = NULL;
 size_t *global_counter = NULL;
-struct timeval start_tv, end_tv;
+struct timespec start_tv, end_tv;
 
 Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff, key__t key, size_t *counter, long *timer);
 
@@ -155,4 +156,6 @@ void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	           struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts);
 
 void cleanup();
+
+void print_tail_latency(WorkerArg* args, size_t request_num);
 #endif
