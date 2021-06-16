@@ -170,12 +170,16 @@ int load(size_t layer_num) {
 }
 
 void initialize_workers(WorkerArg *args, size_t total_op_count) {
+    args[0].histogram = (long *)malloc(total_op_count * sizeof(long));
+    size_t offset = 0;
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
         args[i].db_handler = get_handler(O_RDWR|O_DIRECT);
         args[i].timer = 0;
         args[i].counter = 0;
+        args[i].histogram = args[0].histogram + offset;
+        offset += args[i].op_count;
         io_uring_queue_init(QUEUE_DEPTH, &args[i].local_ring, 0);
     }
 }
@@ -193,36 +197,65 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
     }
 }
 
+int cmp(const void *a, const void *b) {
+    return *(long *)a - *(long *)b;
+}
+
+void print_tail_latency(WorkerArg* args, size_t request_num) {
+    long *histogram = args[0].histogram;
+    qsort(histogram, request_num, sizeof(long), cmp);
+
+    long sum95 = 0, sum99 = 0, sum999 = 0;
+    long idx95 = request_num * 0.95, idx99 = request_num * 0.99, idx999 = request_num * 0.999;
+    // printf("idx95: %ld idx99: %ld idx999: %ld\n", idx95, idx99, idx999);
+    // for (size_t i = 0; i < request_num; i++) {
+    //     printf("%ld ", histogram[i]);
+    // }
+    // printf("\n");
+
+    for (size_t i = idx95; i < request_num; i++) {
+        sum95  += histogram[i];
+        sum99  += i >= idx99  ? histogram[i] : 0;
+        sum999 += i >= idx999 ? histogram[i] : 0;
+    }
+
+    printf("95%%   latency: %f us\n", (double)sum95  / (request_num - idx95)  / 1000);
+    printf("99%%   latency: %f us\n", (double)sum99  / (request_num - idx99)  / 1000);
+    printf("99.9%% latency: %f us\n", (double)sum999 / (request_num - idx999) / 1000);
+}
+
 int run(size_t layer_num, size_t request_num, size_t thread_num) {
     printf("Run the test of %lu requests\n", request_num);
     initialize(layer_num, RUN_MODE);
     // build_cache(layer_num > cache_layer ? cache_layer : layer_num);
 
     worker_num = thread_num;
-    struct timeval start, end;
+    struct timespec start, end;
     pthread_t tids[worker_num];
     WorkerArg args[worker_num];
 
     initialize_workers(args, request_num);
 
-    gettimeofday(&start, NULL);
+    clock_gettime(CLOCK_REALTIME, &start);
     start_workers(tids, args);
     terminate_workers(tids, args);
-    gettimeofday(&end, NULL);
+    clock_gettime(CLOCK_REALTIME, &end);
 
     long total_latency = 0;
     for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
-    long run_time = 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
+    long run_time = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
 
     printf("Average throughput: %f op/s latency: %f usec\n", 
-            (double)request_num / run_time * 1000000, (double)total_latency / request_num);
+            (double)request_num / run_time * 1000000000, (double)total_latency / request_num / 1000);
+
+    print_tail_latency(args, request_num);
 
     return terminate();
 }
 
 void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
-    struct timeval start, end;
+    struct timespec start, end;
 
     srand(r->index);
     printf("thread %ld op_count %ld\n", r->index, r->op_count);
@@ -232,20 +265,20 @@ void *subtask(void *args) {
 
         int type = rand() % 100;
         if (type < read_ratio) {
-            if (i - r->counter > QUEUE_DEPTH) {
-                wait_for_completion(&(r->local_ring), &(r->counter), i-1);
+            if (i - r->counter >= QUEUE_DEPTH) {
+                wait_for_completion(&(r->local_ring), &(r->counter), i-QUEUE_DEPTH+1);
             }
             get(key, val, r);
         } else if (type < read_ratio + rmw_ratio) {
-            gettimeofday(&start, NULL);    
+            clock_gettime(CLOCK_REALTIME, &start);
             read_modify_write(key, val, r->db_handler);
-            gettimeofday(&end, NULL);
+            clock_gettime(CLOCK_REALTIME, &end);
         } else {
             sprintf(val, "%63d", rand());
 
-            gettimeofday(&start, NULL);    
+            clock_gettime(CLOCK_REALTIME, &start);
             update(key, val, r->db_handler);
-            gettimeofday(&end, NULL);
+            clock_gettime(CLOCK_REALTIME, &end);
         }
 
     }
@@ -318,19 +351,20 @@ void traverse_complete(struct io_uring *ring) {
             printf("Errror! key: %lu val: %s\n", req->key, val);
         }            
 
-        struct timeval end;
-        gettimeofday(&end, NULL);
-        size_t latency = 1000000 * (end.tv_sec - req->start.tv_sec) + (end.tv_usec - req->start.tv_usec);
+        struct timespec end;
+        clock_gettime(CLOCK_REALTIME, &end);
+        size_t latency = 1000000000 * (end.tv_sec - req->start.tv_sec) + (end.tv_nsec - req->start.tv_nsec);
 
         // __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
         // __atomic_fetch_add(req->timer, latency, __ATOMIC_SEQ_CST);
+        req->warg->histogram[req->warg->counter] = latency;
         req->warg->counter++;
         req->warg->timer += latency;
         // printf("thread %lu start %ld offset %ld end %ld latency %ld us\n", 
         //         req->thread,
-        //         1000000 * req->start.tv_sec + req->start.tv_usec,
-        //         1000000 * (req->start.tv_sec - start_tv.tv_sec) + (req->start.tv_usec - start_tv.tv_usec),
-        //         1000000 * end.tv_sec + end.tv_usec,
+        //         1000000 * req->start.tv_sec + req->start.tv_nsec,
+        //         1000000 * (req->start.tv_sec - start_tv.tv_sec) + (req->start.tv_nsec - start_tv.tv_nsec),
+        //         1000000 * end.tv_sec + end.tv_nsec,
         //         latency);
 
         free(log);
@@ -432,7 +466,7 @@ Request *init_request(key__t key, WorkerArg *warg) {
     req->key = key;
     req->warg = warg;
     req->is_value = false;
-    gettimeofday(&(req->start), NULL);    
+    clock_gettime(CLOCK_REALTIME, &(req->start));
 
     return req;
 }
