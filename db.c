@@ -404,7 +404,7 @@ int run() {
                     layer_cnt, request_cnt, thread_cnt);
 
     initialize(layer_cnt, RUN_MODE);
-    // build_cache(layer_cnt > cache_layer ? cache_layer : layer_cnt);
+    build_cache(layer_cnt > cache_layer ? cache_layer : layer_cnt);
 
     worker_num = thread_cnt;
     pthread_t tids[worker_num];
