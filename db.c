@@ -227,7 +227,7 @@ void print_tail_latency(WorkerArg* args, size_t request_num) {
 int run(size_t layer_num, size_t request_num, size_t thread_num) {
     printf("Run the test of %lu requests\n", request_num);
     initialize(layer_num, RUN_MODE);
-    // build_cache(layer_num > cache_layer ? cache_layer : layer_num);
+    build_cache(layer_num > cache_layer ? cache_layer : layer_num);
 
     worker_num = thread_num;
     struct timespec start, end;
