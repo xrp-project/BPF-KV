@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <pthread.h>
-#include <sys/time.h>
+#include <time.h>
 #include <liburing.h>
 
 // Data-level information
@@ -40,7 +40,7 @@ typedef struct _Log {
 } Log;
 
 // Database-level information
-#define DB_PATH "/mnt/nvme0n1/db.storage"
+#define DB_PATH "/dev/treenvme0"
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
@@ -67,6 +67,7 @@ typedef struct {
     size_t timer;
     struct io_uring local_ring;
     size_t counter;
+    long *histogram;
 } WorkerArg;
 
 typedef struct {
@@ -74,7 +75,7 @@ typedef struct {
     ptr__t ofs;
     struct iovec vec;
     bool is_value;
-    struct timeval start;
+    struct timespec start;
     WorkerArg *warg;
 } Request;
 
