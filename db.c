@@ -267,17 +267,17 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
 }
 
 void start_workers(pthread_t *tids, WorkerArg *args) {
-    for (size_t i = 1; i < worker_num; i++) {
-        // pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
-        spdk_env_thread_launch_pinned(args[i].index, subtask, (void*)&args[i]);
+    for (size_t i = 0; i < worker_num; i++) {
+        pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
+        // spdk_env_thread_launch_pinned(args[i].index, subtask, (void*)&args[i]);
     }
 }
 
 void terminate_workers(pthread_t *tids, WorkerArg *args) {
-    // for (size_t i = 0; i < worker_num; i++) {
-    //     pthread_join(tids[i], NULL);
-    // }
-    spdk_env_thread_wait_all();
+    for (size_t i = 0; i < worker_num; i++) {
+        pthread_join(tids[i], NULL);
+    }
+    // spdk_env_thread_wait_all();
 }
 
 void read_complete(void *arg, const struct spdk_nvme_cpl *completion) {
@@ -414,7 +414,6 @@ int run() {
 
     clock_gettime(CLOCK_REALTIME, &start_tv);
     start_workers(tids, args);
-    subtask((void *)&args[0]); // the main core
     terminate_workers(tids, args);
     clock_gettime(CLOCK_REALTIME, &end_tv);
 
@@ -431,6 +430,7 @@ int run() {
 
 void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
+    spdk_unaffinitize_thread();
     r->qpair = spdk_nvme_ctrlr_alloc_io_qpair(global_ctrlr, NULL, 0);
 
     srand(r->index);
