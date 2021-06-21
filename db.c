@@ -268,6 +268,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
 }
 
 void start_workers(pthread_t *tids, WorkerArg *args) {
+    pthread_create(&tids[worker_num], NULL, print_status, (void *)args);
     for (size_t i = 0; i < worker_num; i++) {
         pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
         // spdk_env_thread_launch_pinned(args[i].index, subtask, (void*)&args[i]);
@@ -275,7 +276,7 @@ void start_workers(pthread_t *tids, WorkerArg *args) {
 }
 
 void terminate_workers(pthread_t *tids, WorkerArg *args) {
-    for (size_t i = 0; i < worker_num; i++) {
+    for (size_t i = 0; i < worker_num + 1; i++) {
         pthread_join(tids[i], NULL);
     }
     // spdk_env_thread_wait_all();
@@ -408,7 +409,7 @@ int run() {
     build_cache(layer_cnt > cache_layer ? cache_layer : layer_cnt);
 
     worker_num = thread_cnt;
-    pthread_t tids[worker_num];
+    pthread_t tids[worker_num + 1];
     WorkerArg args[worker_num];
 
     initialize_workers(args, request_cnt);
@@ -437,8 +438,9 @@ void *subtask(void *args) {
     srand(r->index);
     printf("thread %ld has %ld ops\n", r->index, r->op_count);
     size_t window = 128; // Half of the default queue size
-    uint64_t tsc_current, tsc_next_print;
+    uint64_t tsc_current, tsc_next_print, tsc_next_sleep;
     tsc_next_print = spdk_get_ticks() + g_tsc_rate;
+    tsc_next_sleep = tsc_next_print + 9 * g_tsc_rate;
     size_t prev_op = 0;
 
     for (size_t i = 0; i < r->op_count; i++) {
@@ -453,12 +455,18 @@ void *subtask(void *args) {
         get(key, val, r);
         wait_for_completion(r->qpair, &(r->counter), i+1);
         
-        tsc_current = spdk_get_ticks();
-        if (tsc_current > tsc_next_print) {
-            printf("thread %ld %d op/s\n", r->index, i - prev_op + 1);
-            prev_op = i;
-            tsc_next_print += g_tsc_rate;
-        }
+        // tsc_current = spdk_get_ticks();
+        // if (tsc_current > tsc_next_print) {
+        //     printf("thread %ld %d op/s\n", r->index, i - prev_op + 1);
+        //     prev_op = i;
+        //     tsc_next_print = tsc_current + g_tsc_rate;
+        // }
+        // if (r->index == 6 && tsc_current > tsc_next_sleep) {
+        //     sleep(10);
+        //     tsc_current = spdk_get_ticks();
+        //     tsc_next_sleep = tsc_current + 10 * g_tsc_rate;
+        //     tsc_next_print = tsc_current + g_tsc_rate;
+        // }
     }
     wait_for_completion(r->qpair, &(r->counter), r->op_count);
     // printf("thread %ld finishes %ld ops\n", r->index, r->counter);
@@ -468,23 +476,29 @@ void *print_status(void *args) {
     WorkerArg *r = (WorkerArg *)args;
     spdk_unaffinitize_thread();
 
-    bool all_done = false;
+    size_t op_done;
     unsigned int sleep_sec = 1;
-    size_t prev_op = 0, now_op;
     struct timespec start, end;
+    size_t pre_op[worker_num], now_op[worker_num];
+    for (size_t i = 0; i < worker_num; i++) {
+        pre_op[i] = 0;
+    }
     clock_gettime(CLOCK_REALTIME, &start);
 
-    while (!all_done) {
+    while (op_done != request_cnt) {
         sleep(sleep_sec);
-        clock_gettime(CLOCK_REALTIME, &end);
-        for (size_t i = 0, now_op = 0; i < worker_num; i++) {
-            now_op += r[i].counter;
+        for (size_t i = 0; i < worker_num; i++) {
+            now_op[i] = r[i].counter;
         }
+        clock_gettime(CLOCK_REALTIME, &end);
         long interval = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
-        double throughput = (double)(now_op - prev_op) / interval * 1000000000;
-        printf("%d\n", throughput);
-        all_done = now_op == request_cnt;
-        prev_op = now_op;
+        op_done = 0;
+        for (size_t i = 0; i < worker_num; i++) {
+            printf("thread %ld %f op/s\n", i, (double)(now_op[i] - pre_op[i]) / interval * 1000000000);
+            pre_op[i] = now_op[i];
+            op_done += now_op[i];
+        }
+        
         start = end;
     }
 }
