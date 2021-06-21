@@ -90,6 +90,7 @@ struct spdk_nvme_ns	   *global_ns    = NULL;
 struct spdk_nvme_qpair *global_qpair = NULL;
 size_t *global_counter = NULL;
 struct timespec start_tv, end_tv;
+u_int64_t g_tsc_rate;
 
 Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff, key__t key, size_t *counter, long *timer);
 
@@ -110,6 +111,8 @@ int load();
 int run();
 
 void *subtask(void *args);
+
+void *print_status(void *args);
 
 void build_cache(size_t layer_num);
 

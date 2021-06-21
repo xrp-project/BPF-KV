@@ -41,6 +41,7 @@ void initialize(size_t layer_num, int mode) {
     cache_cap = 0;
     global_counter = (size_t *)malloc(sizeof(size_t));
     *global_counter = 0;
+    g_tsc_rate = spdk_get_ticks_hz();
 
     printf("%lu blocks in total, max key is %lu\n", total_node, max_key);
 }
@@ -436,6 +437,10 @@ void *subtask(void *args) {
     srand(r->index);
     printf("thread %ld has %ld ops\n", r->index, r->op_count);
     size_t window = 128; // Half of the default queue size
+    uint64_t tsc_current, tsc_next_print;
+    tsc_next_print = spdk_get_ticks() + g_tsc_rate;
+    size_t prev_op = 0;
+
     for (size_t i = 0; i < r->op_count; i++) {
         // Move the window
         // while (i - r->counter > window) {
@@ -447,9 +452,41 @@ void *subtask(void *args) {
 
         get(key, val, r);
         wait_for_completion(r->qpair, &(r->counter), i+1);
+        
+        tsc_current = spdk_get_ticks();
+        if (tsc_current > tsc_next_print) {
+            printf("thread %ld %d op/s\n", r->index, i - prev_op + 1);
+            prev_op = i;
+            tsc_next_print += g_tsc_rate;
+        }
     }
     wait_for_completion(r->qpair, &(r->counter), r->op_count);
     // printf("thread %ld finishes %ld ops\n", r->index, r->counter);
+}
+
+void *print_status(void *args) {
+    WorkerArg *r = (WorkerArg *)args;
+    spdk_unaffinitize_thread();
+
+    bool all_done = false;
+    unsigned int sleep_sec = 1;
+    size_t prev_op = 0, now_op;
+    struct timespec start, end;
+    clock_gettime(CLOCK_REALTIME, &start);
+
+    while (!all_done) {
+        sleep(sleep_sec);
+        clock_gettime(CLOCK_REALTIME, &end);
+        for (size_t i = 0, now_op = 0; i < worker_num; i++) {
+            now_op += r[i].counter;
+        }
+        long interval = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
+        double throughput = (double)(now_op - prev_op) / interval * 1000000000;
+        printf("%d\n", throughput);
+        all_done = now_op == request_cnt;
+        prev_op = now_op;
+        start = end;
+    }
 }
 
 int get(key__t key, val__t val, WorkerArg *r) {
