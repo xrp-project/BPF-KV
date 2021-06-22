@@ -40,6 +40,7 @@ void initialize(size_t layer_num, int mode) {
         logfn = get_log_handler(O_RDONLY);
     }
 
+    ioctl(db, TREENVME_IOCTL_IO_CMD);
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
     total_node = 1;
     layer_cap[0] = 1;
@@ -191,50 +192,49 @@ int run(size_t layer_num, size_t request_num, size_t thread_num) {
     build_cache(layer_num > 3 ? 3 : layer_num);
 
     worker_num = thread_num;
-    struct timeval start, end;
+    struct timespec start, end;
     pthread_t tids[worker_num];
     WorkerArg args[worker_num];
 
     initialize_workers(args, request_num);
 
-    gettimeofday(&start, NULL);
+    clock_gettime(CLOCK_REALTIME, &start);
     start_workers(tids, args);
     terminate_workers(tids, args);
-    gettimeofday(&end, NULL);
+    clock_gettime(CLOCK_REALTIME, &end);
 
     long total_latency = 0;
     for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
-    long run_time = 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
+    long run_time = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
 
     printf("Average throughput: %f op/s latency: %f usec\n", 
-            (double)request_num / run_time * 1000000, (double)total_latency / request_num);
+            (double)request_num / run_time * 1000000000, (double)total_latency / request_num / 1000);
 
     return terminate();
 }
 
 void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
-    struct timeval start, end;
-
+    struct timespec tps, tpe;
     srand(r->index);
     printf("thread %ld op_count %ld\n", r->index, r->op_count);
     for (size_t i = 0; i < r->op_count; i++) {
         key__t key = rand() % max_key;
         val__t val;
 
-        gettimeofday(&start, NULL);
+        clock_gettime(CLOCK_REALTIME, &tps);
         get(key, val, r->db_handler, r->log_handler);
-        gettimeofday(&end, NULL);
-        r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
-
+        clock_gettime(CLOCK_REALTIME, &tpe);
+        r->timer += 1000000000 * (tpe.tv_sec - tps.tv_sec) + (tpe.tv_nsec - tps.tv_nsec);
         if (key != atoi(val)) {
             printf("Error! key: %lu val: %s thrd: %ld\n", key, val, r->index);
-        }       
+        }      
     }
 }
 
 int get(key__t key, val__t val, int db_handler, int log_handler) {
-    ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+    //ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+    ptr__t ptr = encode(0);
     Node *node = malloc(sizeof(Node));
 
     if (posix_memalign((void **)&node, 512, sizeof(Node))) {
@@ -265,11 +265,15 @@ int get(key__t key, val__t val, int db_handler, int log_handler) {
     //ioctl(db_handler, TREENVME_IOCTL_REGISTER_BLOCKTABLE, tbl);
     memcpy(node, &key, sizeof(key));
     read_node(ptr, node, db_handler);
+    Log *log = (Log *)node;
+    memcpy(val, log->val[0], VAL_SIZE);
+    
     //print_node(ptr, node);
-    ptr = next_node(key, node); 
-    printf("FINALPTR: %d\n", ptr);
+    // ptr = next_node(key, node); 
+    //printf("FINALPTR: %d\n", ptr);
 
-    return retrieve_value(ptr, val, log_handler);
+    // return retrieve_value(ptr, val, log_handler);
+    return 0;
 }
 
 void print_node(ptr__t ptr, Node *node) {
@@ -291,16 +295,16 @@ void print_log(ptr__t ptr, Log *log) {
 }
 
 void read_node(ptr__t ptr, Node *node, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    read(db_handler, node, sizeof(Node));
+    //lseek(db_handler, decode(ptr), SEEK_SET);
+    pread(db_handler, node, sizeof(Node), decode(ptr));
     
     // Debug output
     // print_node(ptr, node);
 }
 
 void read_log(ptr__t ptr, Log *log, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    read(db_handler, log, sizeof(Log));
+    //lseek(db_handler, decode(ptr), SEEK_SET);
+    pread(db_handler, log, sizeof(Log), decode(ptr));
 
     // Debug output
     // print_log(ptr, log);

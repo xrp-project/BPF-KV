@@ -21,4 +21,4 @@ all: drop.o drop2.o
 	$(LLC) -march=bpf -filetype=obj -o $@ ${@:.o=.ll}
 
 clean: 
-	rm -rf %.o
+	rm -rf *.o

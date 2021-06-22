@@ -7,7 +7,16 @@
 #include <sys/stat.h>
 
 int get_handler(int flag) {
-    int fd = open(DB_PATH, flag | O_DIRECT, 0755);
+    int fd = open(DB_PATH, flag, 0755);
+    if (fd < 0) {
+        printf("Fail to open file %s!\n", DB_PATH);
+        exit(0);
+    }
+    return fd;
+}
+
+int get_load_handler(int flag) {
+    int fd = open(DB_PATH, flag, 0755);
     if (fd < 0) {
         printf("Fail to open file %s!\n", DB_PATH);
         exit(0);
@@ -17,9 +26,9 @@ int get_handler(int flag) {
 
 void initialize(size_t layer_num, int mode) {
     if (mode == LOAD_MODE) {
-        db = get_handler(O_CREAT|O_TRUNC|O_WRONLY);
+        db = get_load_handler(O_CREAT|O_TRUNC|O_WRONLY);
     } else {
-        db = get_handler(O_RDONLY);
+        db = get_handler(O_RDONLY|O_DIRECT);
     }
     
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
@@ -148,7 +157,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
-        args[i].db_handler = get_handler(O_RDONLY);
+        args[i].db_handler = get_handler(O_RDONLY|O_DIRECT);
         args[i].timer = 0;
     }
 }
@@ -196,7 +205,7 @@ int run(size_t layer_num, size_t request_num, size_t thread_num) {
 void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
     struct timeval start, end;
-
+    struct timespec tps, tpe;
     srand(r->index);
     printf("thread %ld op_count %ld\n", r->index, r->op_count);
     for (size_t i = 0; i < r->op_count; i++) {
@@ -204,10 +213,13 @@ void *subtask(void *args) {
         val__t val;
 
         gettimeofday(&start, NULL);
+	clock_gettime(CLOCK_REALTIME, &tps);
         get(key, val, r->db_handler);
+	clock_gettime(CLOCK_REALTIME, &tpe);
         gettimeofday(&end, NULL);
+        unsigned long btt = (tpe.tv_nsec - tps.tv_nsec);
         r->timer += 1000000 * (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec);
-
+	printf("%lu\n", btt);
         if (key != atoi(val)) {
             printf("Error! key: %lu val: %s thrd: %ld\n", key, val, r->index);
         }       
@@ -215,7 +227,8 @@ void *subtask(void *args) {
 }
 
 int get(key__t key, val__t val, int db_handler) {
-    ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+    //ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+    ptr__t ptr = encode(0);
     Node *node;
 
     if (posix_memalign((void **)&node, 512, sizeof(Node))) {
@@ -237,7 +250,7 @@ int get(key__t key, val__t val, int db_handler) {
         ptr = next_node(key, node);
     } while (node->type != LEAF);
 
-    printf("FINAL PTR:%d\n", ptr);
+    //printf("FINAL PTR:%d\n", ptr);
 
     return retrieve_value(ptr, val, db_handler);
 }
@@ -261,16 +274,16 @@ void print_log(ptr__t ptr, Log *log) {
 }
 
 void read_node(ptr__t ptr, Node *node, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    read(db_handler, node, sizeof(Node));
+    //lseek(db_handler, decode(ptr), SEEK_SET);
+    pread(db_handler, node, sizeof(Node), decode(ptr));
     
     // Debug output
     // print_node(ptr, node);
 }
 
 void read_log(ptr__t ptr, Log *log, int db_handler) {
-    lseek(db_handler, decode(ptr), SEEK_SET);
-    read(db_handler, log, sizeof(Log));
+    //lseek(db_handler, decode(ptr), SEEK_SET);
+    pread(db_handler, log, sizeof(Log), decode(ptr));
 
     // Debug output
     // print_log(ptr, log);
