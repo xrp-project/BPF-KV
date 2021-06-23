@@ -372,7 +372,7 @@ void spdk_read(Request *req, size_t lba, size_t nlba, spdk_nvme_cmd_cb cb_fn) {
                                        lba, nlba, cb_fn, req, 0)) != 0) {
         switch (rc) {
             case -ENOMEM:
-                // printf("-ENOMEM %lu\n", *(req->counter));
+                printf("-ENOMEM %lu\n", *(req->counter));
                 wait_for_completion(req->qpair, NULL, 0);
                 break;
             default:
@@ -467,25 +467,28 @@ void *subtask(void *args) {
         // wait_for_completion(r->qpair, &(r->counter), i+1);
     }
 
-    uint64_t interval = g_tsc_rate / req_per_sec * io_queue_size;
+    uint64_t interval = g_tsc_rate / req_per_sec / (layer_cnt + 1) * io_queue_size;
     uint64_t tsc_current = spdk_get_ticks();
     uint64_t tsc_next_throttle = tsc_current + interval;
-    uint64_t tsc_next_sleep = tsc_current + 10 * g_tsc_rate;
+    uint64_t tsc_next_sleep = tsc_current + 5 * g_tsc_rate;
+    if (r->index == 6) {
+        interval /= 2;
+    }
 
     while (r->finished < r->op_count) {
         spdk_nvme_qpair_process_completions(r->qpair, 0);
 
-        // while (tsc_current < tsc_next_throttle) {
-        //     spdk_nvme_qpair_process_completions(r->qpair, 0);
-        //     tsc_current = spdk_get_ticks();
-        // }
-        // tsc_next_throttle = tsc_current + interval;
+        tsc_current = spdk_get_ticks();
+        while (tsc_current < tsc_next_throttle) {
+            tsc_current = spdk_get_ticks();
+        }
+        tsc_next_throttle = tsc_current + interval;
 
-        // if (r->index == 6 && tsc_current > tsc_next_sleep) {
-        //     sleep(10);
-        //     tsc_current = spdk_get_ticks();
-        //     tsc_next_sleep = tsc_current + 10 * g_tsc_rate;
-        // }
+        if (r->index == 6 && tsc_current > tsc_next_sleep) {
+            sleep(5);
+            tsc_current = spdk_get_ticks();
+            tsc_next_sleep = tsc_current + 5 * g_tsc_rate;
+        }
     }
     // printf("thread %lu finishes %lu ops\n", r->index, r->finished);
 }
@@ -497,6 +500,7 @@ void *print_status(void *args) {
     size_t op_done;
     unsigned int sleep_sec = 1;
     struct timespec start, end;
+    size_t pre_tot = 0;
     size_t pre_op[worker_num], now_op[worker_num];
     for (size_t i = 0; i < worker_num; i++) {
         pre_op[i] = 0;
@@ -512,13 +516,15 @@ void *print_status(void *args) {
         long interval = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
         op_done = 0;
         for (size_t i = 0; i < worker_num; i++) {
-            printf("thread %ld %f op/s %lu\n", i, (double)(now_op[i] - pre_op[i]) / interval * 1000000000, now_op[i]);
+            printf("thread %ld %f op/s\n", i, (double)(now_op[i] - pre_op[i]) / interval * 1000000000);
             pre_op[i] = now_op[i];
 
             op_done += now_op[i];
         }
+        printf("total %f op/s\n", (double)(op_done - pre_tot) / interval * 1000000000);
         
         start = end;
+        pre_tot = op_done;
     }
 }
 
