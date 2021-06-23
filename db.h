@@ -47,6 +47,16 @@ typedef struct _Log {
 
 // Database-level information
 typedef struct {
+    size_t op_count;
+    size_t index;
+    struct spdk_nvme_qpair *qpair;
+    long timer;
+    size_t finished;
+    size_t issued;
+    long *histogram;
+} WorkerArg;
+
+typedef struct {
     key__t key;
     ptr__t ofs;
     void *buff;
@@ -55,18 +65,8 @@ typedef struct {
     struct spdk_nvme_ns	*ns;
     struct spdk_nvme_qpair *qpair;
     struct timespec start;
-    long *timer;
-    long *histogram;
+    WorkerArg *warg;
 } Request;
-
-typedef struct {
-    size_t op_count;
-    size_t index;
-    struct spdk_nvme_qpair *qpair;
-    long timer;
-    size_t counter;
-    long *histogram;
-} WorkerArg;
 
 #define DB_PATH "./db.storage"
 #define LOAD_MODE 0
@@ -78,6 +78,7 @@ size_t cache_layer = 3;
 size_t layer_cnt   = 0;
 size_t request_cnt = 0;
 size_t thread_cnt  = 0;
+size_t req_per_sec = 60000;
 
 size_t worker_num;
 size_t total_node;
@@ -91,8 +92,10 @@ struct spdk_nvme_qpair *global_qpair = NULL;
 size_t *global_counter = NULL;
 struct timespec start_tv, end_tv;
 u_int64_t g_tsc_rate;
+u_int32_t max_xfer_size;
+u_int32_t entries;
 
-Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff, key__t key, size_t *counter, long *timer);
+Request *init_request(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buff, key__t key, size_t *counter, WorkerArg *warg);
 
 ptr__t is_file_offset(ptr__t ptr) {
     return ptr & FILE_MASK;
