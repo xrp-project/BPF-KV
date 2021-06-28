@@ -227,17 +227,16 @@ void print_tail_latency(WorkerArg* args, size_t request_num) {
     printf("99.9%% latency: %f us\n", (double)sum999 / (request_num - idx999) / 1000);
 }
 
-int run(size_t layer_num, size_t request_num, size_t thread_num) {
-    printf("Run the test of %lu requests\n", request_num);
-    initialize(layer_num, RUN_MODE);
-    build_cache(layer_num > cache_layer ? cache_layer : layer_num);
+int run() {
+    printf("Run the test of %lu requests\n", request_cnt);
+    initialize(layer_cnt, RUN_MODE);
+    build_cache(layer_cnt > cache_layer ? cache_layer : layer_cnt);
 
-    worker_num = thread_num;
     struct timespec start, end;
     pthread_t tids[worker_num];
     WorkerArg args[worker_num];
 
-    initialize_workers(args, request_num);
+    initialize_workers(args, request_cnt);
 
     clock_gettime(CLOCK_REALTIME, &start);
     start_workers(tids, args);
@@ -249,8 +248,8 @@ int run(size_t layer_num, size_t request_num, size_t thread_num) {
     long run_time = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
 
     printf("Average throughput: %f op/s latency: %f usec\n", 
-            (double)request_num / run_time * 1000000000, (double)total_latency / request_num / 1000);
-    print_tail_latency(args, request_num);
+            (double)request_cnt / run_time * 1000000000, (double)total_latency / request_cnt / 1000);
+    print_tail_latency(args, request_cnt);
 
     return terminate();
 }
@@ -285,6 +284,41 @@ void *subtask(void *args) {
 
     }
     wait_for_completion(&(r->local_ring), &(r->counter), r->op_count);
+}
+
+void *print_status(void *args) {
+    // WorkerArg *r = (WorkerArg *)args;
+    // spdk_unaffinitize_thread();
+
+    // size_t op_done;
+    // unsigned int sleep_sec = 1;
+    // struct timespec start, end;
+    // size_t pre_tot = 0;
+    // size_t pre_op[worker_num], now_op[worker_num];
+    // for (size_t i = 0; i < worker_num; i++) {
+    //     pre_op[i] = 0;
+    // }
+    // clock_gettime(CLOCK_REALTIME, &start);
+
+    // while (op_done < request_cnt) {
+    //     sleep(sleep_sec);
+    //     for (size_t i = 0; i < worker_num; i++) {
+    //         now_op[i] = r[i].finished;
+    //     }
+    //     clock_gettime(CLOCK_REALTIME, &end);
+    //     long interval = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
+    //     op_done = 0;
+    //     for (size_t i = 0; i < worker_num; i++) {
+    //         printf("thread %ld %f op/s\n", i, (double)(now_op[i] - pre_op[i]) / interval * 1000000000);
+    //         pre_op[i] = now_op[i];
+
+    //         op_done += now_op[i];
+    //     }
+    //     printf("total %f op/s\n", (double)(op_done - pre_tot) / interval * 1000000000);
+        
+    //     start = end;
+    //     pre_tot = op_done;
+    // }
 }
 
 int get(key__t key, val__t val, WorkerArg *r) {
@@ -662,10 +696,12 @@ int main(int argc, char *argv[]) {
             return prompt_help();
         }
         layer_cnt = atoi(argv[2]);
+        request_cnt = atoi(argv[3]);
+        worker_num = atoi(argv[4]);
         read_ratio = atoi(argv[5]);
         rmw_ratio = atoi(argv[6]);
         cache_layer = atoi(argv[7]);
-        return run(layer_cnt, atoi(argv[3]), atoi(argv[4]));
+        return run();
     } else {
         return prompt_help();
     }

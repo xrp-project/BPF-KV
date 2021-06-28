@@ -49,6 +49,7 @@ typedef struct _Log {
 size_t layer_cnt;
 size_t cache_layer = 3;
 size_t worker_num;
+size_t request_cnt;
 size_t total_node;
 size_t *layer_cap;
 key__t max_key;
@@ -95,11 +96,13 @@ ptr__t decode(ptr__t ptr) {
 
 int load(size_t layer_num);
 
-int run(size_t layer_num, size_t request_num, size_t thread_num);
+int run();
 
 void *subtask(void *args);
 
 void build_cache(size_t layer_num);
+
+void *print_status(void *args);
 
 int get(key__t key, val__t val, WorkerArg *r);
 
