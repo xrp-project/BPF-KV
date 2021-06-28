@@ -180,7 +180,8 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
         args[i].db_handler = get_handler(O_RDWR|O_DIRECT);
         args[i].timer = 0;
-        args[i].counter = 0;
+        args[i].finished = 0;
+        args[i].issued = 0;
         args[i].histogram = args[0].histogram + offset;
         offset += args[i].op_count;
         io_uring_queue_init(QUEUE_DEPTH, &args[i].local_ring, 0);
@@ -188,6 +189,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
 }
 
 void start_workers(pthread_t *tids, WorkerArg *args) {
+    pthread_create(&tids[worker_num], NULL, print_status, (void *)args);
     for (size_t i = 0; i < worker_num; i++) {
         pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
     }
@@ -198,6 +200,7 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
         pthread_join(tids[i], NULL);
         close(args[i].db_handler);
     }
+    pthread_join(tids[worker_num], NULL);
 }
 
 int cmp(const void *a, const void *b) {
@@ -233,7 +236,7 @@ int run() {
     build_cache(layer_cnt > cache_layer ? cache_layer : layer_cnt);
 
     struct timespec start, end;
-    pthread_t tids[worker_num];
+    pthread_t tids[worker_num + 1];
     WorkerArg args[worker_num];
 
     initialize_workers(args, request_cnt);
@@ -266,8 +269,8 @@ void *subtask(void *args) {
 
         int type = rand() % 100;
         if (type < read_ratio) {
-            if (i - r->counter >= QUEUE_DEPTH) {
-                wait_for_completion(&(r->local_ring), &(r->counter), i-QUEUE_DEPTH+1);
+            if (i - r->finished >= QUEUE_DEPTH) {
+                wait_for_completion(&(r->local_ring), &(r->finished), i-QUEUE_DEPTH+1);
             }
             get(key, val, r);
         } else if (type < read_ratio + rmw_ratio) {
@@ -283,42 +286,41 @@ void *subtask(void *args) {
         }
 
     }
-    wait_for_completion(&(r->local_ring), &(r->counter), r->op_count);
+    wait_for_completion(&(r->local_ring), &(r->finished), r->op_count);
 }
 
 void *print_status(void *args) {
-    // WorkerArg *r = (WorkerArg *)args;
-    // spdk_unaffinitize_thread();
+    WorkerArg *r = (WorkerArg *)args;
 
-    // size_t op_done;
-    // unsigned int sleep_sec = 1;
-    // struct timespec start, end;
-    // size_t pre_tot = 0;
-    // size_t pre_op[worker_num], now_op[worker_num];
-    // for (size_t i = 0; i < worker_num; i++) {
-    //     pre_op[i] = 0;
-    // }
-    // clock_gettime(CLOCK_REALTIME, &start);
+    size_t op_done;
+    unsigned int sleep_sec = 1;
+    struct timespec start, end;
+    size_t pre_tot = 0;
+    size_t pre_op[worker_num], now_op[worker_num];
+    for (size_t i = 0; i < worker_num; i++) {
+        pre_op[i] = 0;
+    }
+    clock_gettime(CLOCK_REALTIME, &start);
 
-    // while (op_done < request_cnt) {
-    //     sleep(sleep_sec);
-    //     for (size_t i = 0; i < worker_num; i++) {
-    //         now_op[i] = r[i].finished;
-    //     }
-    //     clock_gettime(CLOCK_REALTIME, &end);
-    //     long interval = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
-    //     op_done = 0;
-    //     for (size_t i = 0; i < worker_num; i++) {
-    //         printf("thread %ld %f op/s\n", i, (double)(now_op[i] - pre_op[i]) / interval * 1000000000);
-    //         pre_op[i] = now_op[i];
+    while (op_done < request_cnt) {
+        sleep(sleep_sec);
+        for (size_t i = 0; i < worker_num; i++) {
+            now_op[i] = r[i].finished;
+        }
+        clock_gettime(CLOCK_REALTIME, &end);
+        long interval = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
+        op_done = 0;
+        for (size_t i = 0; i < worker_num; i++) {
+            printf("thread %ld %f op/s\n", i, (double)(now_op[i] - pre_op[i]) / interval * 1000000000);
+            pre_op[i] = now_op[i];
 
-    //         op_done += now_op[i];
-    //     }
-    //     printf("total %f op/s\n", (double)(op_done - pre_tot) / interval * 1000000000);
+            op_done += now_op[i];
+        }
+        printf("total %f op/s\n", (double)(op_done - pre_tot) / interval * 1000000000);
         
-    //     start = end;
-    //     pre_tot = op_done;
-    // }
+        start = end;
+        pre_tot = op_done;
+    }
 }
 
 int get(key__t key, val__t val, WorkerArg *r) {
@@ -393,8 +395,8 @@ void traverse_complete(struct io_uring *ring) {
 
         // __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
         // __atomic_fetch_add(req->timer, latency, __ATOMIC_SEQ_CST);
-        req->warg->histogram[req->warg->counter] = latency;
-        req->warg->counter++;
+        req->warg->histogram[req->warg->finished] = latency;
+        req->warg->finished++;
         req->warg->timer += latency;
         // printf("thread %lu start %ld offset %ld end %ld latency %ld us\n", 
         //         req->thread,
