@@ -59,6 +59,7 @@ size_t cache_cap;
 pthread_mutex_t *val_lock;
 size_t read_ratio;
 size_t rmw_ratio;
+size_t req_per_sec;
 struct io_uring global_ring;
 
 typedef struct {

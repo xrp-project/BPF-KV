@@ -55,7 +55,7 @@ void initialize(size_t layer_num, int mode) {
 }
 
 void build_cache(size_t layer_num) {
-    if (layer_num == 0) return 0;
+    if (layer_num == 0) return;
     
     size_t entry_num = 0;
     for (size_t i = 0; i < layer_num; i++) {
@@ -263,15 +263,12 @@ void *subtask(void *args) {
 
     srand(r->index);
     printf("thread %ld op_count %ld\n", r->index, r->op_count);
-    for (size_t i = 0; i < r->op_count; i++) {
+    for (size_t i = 0; i < QUEUE_DEPTH; i++) {
         key__t key = rand() % max_key;
         val__t val;
 
         int type = rand() % 100;
         if (type < read_ratio) {
-            if (i - r->finished >= QUEUE_DEPTH) {
-                wait_for_completion(&(r->local_ring), &(r->finished), i-QUEUE_DEPTH+1);
-            }
             get(key, val, r);
         } else if (type < read_ratio + rmw_ratio) {
             clock_gettime(CLOCK_REALTIME, &start);
@@ -286,7 +283,15 @@ void *subtask(void *args) {
         }
 
     }
-    wait_for_completion(&(r->local_ring), &(r->finished), r->op_count);
+    struct timespec ts_sleep;
+    ts_sleep.tv_sec = 0;
+    ts_sleep.tv_nsec = 1000000000 / req_per_sec / (layer_cnt + 1) * QUEUE_DEPTH;
+    printf("sleep ns %ld\n", ts_sleep.tv_nsec);
+
+    while (r->finished != r->op_count) {
+        traverse_complete(&r->local_ring);
+        nanosleep(&ts_sleep, NULL);
+    }
 }
 
 void *print_status(void *args) {
@@ -398,6 +403,19 @@ void traverse_complete(struct io_uring *ring) {
         req->warg->histogram[req->warg->finished] = latency;
         req->warg->finished++;
         req->warg->timer += latency;
+        if (req->warg->issued >= req->warg->op_count) {
+            free(log);
+            free(req);
+        } else {
+            req->warg->issued++;
+            req->key = rand() % max_key;
+            req->is_value = false;
+            memcpy(req->vec.iov_base, &req->key, sizeof(req->key));
+            clock_gettime(CLOCK_REALTIME, &req->start);
+            ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+
+            traverse(ptr, req);
+        }
         // printf("thread %lu start %ld offset %ld end %ld latency %ld us\n", 
         //         req->thread,
         //         1000000 * req->start.tv_sec + req->start.tv_nsec,
@@ -405,8 +423,6 @@ void traverse_complete(struct io_uring *ring) {
         //         1000000 * end.tv_sec + end.tv_nsec,
         //         latency);
 
-        free(log);
-        free(req);
     // } else {
     //     Node *node = (Node *)req->vec.iov_base;
     //     ptr__t ptr = next_node(req->key, node);
@@ -500,6 +516,7 @@ Request *init_request(key__t key, WorkerArg *warg) {
         perror("posix_memalign failed");
         exit(1);
     }
+    // let the BPF function know the key
     memcpy(req->vec.iov_base, &key, sizeof(key));
 
     req->key = key;
@@ -684,7 +701,7 @@ ptr__t next_node(key__t key, Node *node) {
 
 int prompt_help() {
     printf("Usage: ./db --load number_of_layers\n");
-    printf("or     ./db --run number_of_layers number_of_requests number_of_threads read_ratio rmw_ratio cache_layers\n");
+    printf("or     ./db --run number_of_layers number_of_requests number_of_threads read_ratio rmw_ratio cache_layers req_per_sec\n");
     return 0;
 }
 
@@ -694,7 +711,7 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[1], "--load") == 0) {
         return load(atoi(argv[2]));
     } else if (strcmp(argv[1], "--run") == 0) {
-        if (argc < 8) {
+        if (argc < 9) {
             return prompt_help();
         }
         layer_cnt = atoi(argv[2]);
@@ -703,6 +720,7 @@ int main(int argc, char *argv[]) {
         read_ratio = atoi(argv[5]);
         rmw_ratio = atoi(argv[6]);
         cache_layer = atoi(argv[7]);
+        req_per_sec = atoi(argv[8]);
         return run();
     } else {
         return prompt_help();
