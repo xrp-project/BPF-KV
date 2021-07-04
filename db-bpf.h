@@ -100,11 +100,15 @@ int load(size_t layer_num);
 
 int run();
 
+size_t get_nano(struct timespec ts);
+
+void add_nano_to_timespec(struct timespec *x, size_t nano);
+
 void *subtask(void *args);
 
 void build_cache(size_t layer_num);
 
-void *print_status(void *args);
+void *print_and_poll(void *args);
 
 int get(key__t key, val__t val, WorkerArg *r);
 

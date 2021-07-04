@@ -189,18 +189,18 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
 }
 
 void start_workers(pthread_t *tids, WorkerArg *args) {
-    pthread_create(&tids[worker_num], NULL, print_status, (void *)args);
+    pthread_create(&tids[worker_num], NULL, print_and_poll, (void *)args);
     for (size_t i = 0; i < worker_num; i++) {
         pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
     }
 }
 
 void terminate_workers(pthread_t *tids, WorkerArg *args) {
+    pthread_join(tids[worker_num], NULL);
     for (size_t i = 0; i < worker_num; i++) {
         pthread_join(tids[i], NULL);
         close(args[i].db_handler);
     }
-    pthread_join(tids[worker_num], NULL);
 }
 
 int cmp(const void *a, const void *b) {
@@ -257,74 +257,111 @@ int run() {
     return terminate();
 }
 
+inline size_t get_nano(struct timespec ts) {
+    return 1000000000 * ts.tv_sec + ts.tv_nsec;
+}
+
+void add_nano_to_timespec(struct timespec *x, size_t nano) {
+    x->tv_sec += (x->tv_nsec + nano) / 1000000000;
+    x->tv_nsec = (x->tv_nsec + nano) % 1000000000;
+}
+
 void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
     struct timespec start, end;
 
     srand(r->index);
     printf("thread %ld op_count %ld\n", r->index, r->op_count);
-    for (size_t i = 0; i < QUEUE_DEPTH; i++) {
+    Request **req_arr = (Request **)malloc(r->op_count * sizeof(Request *));
+    pthread_cond_t cond;
+    pthread_mutex_t mutex;
+    pthread_cond_init(&cond, NULL);
+    pthread_mutex_init(&mutex, NULL);
+    struct timespec now, deadline;
+    clock_gettime(CLOCK_REALTIME, &now);
+    size_t gap = 1000000000 / req_per_sec;
+    deadline = now;
+
+    for (size_t i = 0; i < r->op_count; i++) {
         key__t key = rand() % max_key;
         val__t val;
 
-        int type = rand() % 100;
-        if (type < read_ratio) {
-            get(key, val, r);
-        } else if (type < read_ratio + rmw_ratio) {
-            clock_gettime(CLOCK_REALTIME, &start);
-            read_modify_write(key, val, r->db_handler);
-            clock_gettime(CLOCK_REALTIME, &end);
-        } else {
-            sprintf(val, "%63d", rand());
-
-            clock_gettime(CLOCK_REALTIME, &start);
-            update(key, val, r->db_handler);
-            clock_gettime(CLOCK_REALTIME, &end);
+        pthread_mutex_lock(&mutex);
+        add_nano_to_timespec(&deadline, gap);
+        if (r->issued < i && r->issued - r->finished < QUEUE_DEPTH) {
+            // printf("issued %lu key %lu ofs %lu\n", r->issued, req_arr[r->issued]->key, req_arr[r->issued]->ofs);
+            traverse(encode(0), req_arr[r->issued++]);
         }
+        pthread_cond_timedwait(&cond, &mutex, &deadline);
+        pthread_mutex_unlock(&mutex);
 
-    }
-    struct timespec ts_sleep;
-    ts_sleep.tv_sec = 0;
-    ts_sleep.tv_nsec = 1000000000 / req_per_sec / (layer_cnt + 1) * QUEUE_DEPTH;
-    printf("sleep ns %ld\n", ts_sleep.tv_nsec);
+        req_arr[i] = init_request(key, r);
+        // printf("inireq %lu key %lu ofs %lu\n", i, req_arr[i]->key, req_arr[i]->ofs);
+        clock_gettime(CLOCK_REALTIME, &now);
 
-    while (r->finished != r->op_count) {
-        traverse_complete(&r->local_ring);
-        nanosleep(&ts_sleep, NULL);
+        // int type = rand() % 100;
+        // if (type < read_ratio) {
+        //     get(key, val, r);
+        // } else if (type < read_ratio + rmw_ratio) {
+        //     clock_gettime(CLOCK_REALTIME, &start);
+        //     read_modify_write(key, val, r->db_handler);
+        //     clock_gettime(CLOCK_REALTIME, &end);
+        // } else {
+        //     sprintf(val, "%63d", rand());
+
+        //     clock_gettime(CLOCK_REALTIME, &start);
+        //     update(key, val, r->db_handler);
+        //     clock_gettime(CLOCK_REALTIME, &end);
+        // }
     }
+    pthread_cond_destroy(&cond);
+    pthread_mutex_destroy(&mutex);
+
+    printf("thread %lu issued all requsts\n", r->index);
+
+    while (r->issued < r->op_count) {
+        while (r->issued < r->op_count && r->issued - r->finished < QUEUE_DEPTH) {
+            traverse(encode(0), req_arr[r->issued++]);
+        }
+    }
+    free(req_arr);
+    printf("thread %lu finishes %lu\n", r->index, r->finished);
 }
 
-void *print_status(void *args) {
+void *print_and_poll(void *args) {
     WorkerArg *r = (WorkerArg *)args;
 
-    size_t op_done;
-    unsigned int sleep_sec = 1;
-    struct timespec start, end;
-    size_t pre_tot = 0;
-    size_t pre_op[worker_num], now_op[worker_num];
-    for (size_t i = 0; i < worker_num; i++) {
-        pre_op[i] = 0;
-    }
-    clock_gettime(CLOCK_REALTIME, &start);
+    size_t now_op_done = 0, old_op_done = 0, gap = 1000000000;
+    size_t old_op[worker_num], now_op[worker_num];
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    size_t deadline = get_nano(now) + gap, elapsed = 0;
 
-    while (op_done < request_cnt) {
-        sleep(sleep_sec);
+    while (now_op_done < request_cnt) {
+        while (get_nano(now) < deadline) {
+            for (size_t i = 0; i < worker_num; i++) {
+                if (r[i].finished < r[i].op_count) {
+                    traverse_complete(&r[i].local_ring);
+                }
+            }
+            clock_gettime(CLOCK_REALTIME, &now);
+        }
+        elapsed = get_nano(now) - deadline + gap;
+        deadline = get_nano(now) + gap;
+
         for (size_t i = 0; i < worker_num; i++) {
             now_op[i] = r[i].finished;
         }
-        clock_gettime(CLOCK_REALTIME, &end);
-        long interval = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
-        op_done = 0;
-        for (size_t i = 0; i < worker_num; i++) {
-            printf("thread %ld %f op/s\n", i, (double)(now_op[i] - pre_op[i]) / interval * 1000000000);
-            pre_op[i] = now_op[i];
 
-            op_done += now_op[i];
+        now_op_done = 0;
+        for (size_t i = 0; i < worker_num; i++) {
+            printf("thread %ld %f op/s\n", i, 1E9 * (now_op[i] - old_op[i]) / elapsed);
+            old_op[i] = now_op[i];
+            now_op_done += now_op[i];
         }
-        printf("total %f op/s\n", (double)(op_done - pre_tot) / interval * 1000000000);
-        
-        start = end;
-        pre_tot = op_done;
+
+        printf("total %f op/s now_op_done %lu\n", 1E9 * (now_op_done - old_op_done) / elapsed, now_op_done);
+        old_op_done = now_op_done;
     }
 }
 
@@ -403,19 +440,8 @@ void traverse_complete(struct io_uring *ring) {
         req->warg->histogram[req->warg->finished] = latency;
         req->warg->finished++;
         req->warg->timer += latency;
-        if (req->warg->issued >= req->warg->op_count) {
-            free(log);
-            free(req);
-        } else {
-            req->warg->issued++;
-            req->key = rand() % max_key;
-            req->is_value = false;
-            memcpy(req->vec.iov_base, &req->key, sizeof(req->key));
-            clock_gettime(CLOCK_REALTIME, &req->start);
-            ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
-
-            traverse(ptr, req);
-        }
+        free(log);
+        free(req);
         // printf("thread %lu start %ld offset %ld end %ld latency %ld us\n", 
         //         req->thread,
         //         1000000 * req->start.tv_sec + req->start.tv_nsec,
@@ -520,6 +546,7 @@ Request *init_request(key__t key, WorkerArg *warg) {
     memcpy(req->vec.iov_base, &key, sizeof(key));
 
     req->key = key;
+    req->ofs = 0;
     req->warg = warg;
     req->is_value = false;
     clock_gettime(CLOCK_REALTIME, &(req->start));
