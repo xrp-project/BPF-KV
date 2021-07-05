@@ -173,7 +173,7 @@ int load(size_t layer_num) {
 }
 
 void initialize_workers(WorkerArg *args, size_t total_op_count) {
-    args[0].histogram = (long *)malloc(total_op_count * sizeof(long));
+    args[0].histogram = (size_t *)malloc(total_op_count * sizeof(size_t));
     size_t offset = 0;
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
@@ -204,19 +204,30 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 }
 
 int cmp(const void *a, const void *b) {
-    return *(long *)a - *(long *)b;
+    long t = (long)(*(size_t *)a - *(size_t *)b);
+    if (t < 0) {
+        return -1;
+    } else if (t == 0){
+        return 0;
+    } else {
+        return 1;
+    }
 }
 
 void print_tail_latency(WorkerArg* args, size_t request_num) {
-    long *histogram = args[0].histogram;
-    qsort(histogram, request_num, sizeof(long), cmp);
+    size_t *histogram = args[0].histogram;
+    qsort(histogram, request_num, sizeof(size_t), cmp);
 
-    long sum95 = 0, sum99 = 0, sum999 = 0;
-    long idx95 = request_num * 0.95, idx99 = request_num * 0.99, idx999 = request_num * 0.999;
+    size_t sum95 = 0, sum99 = 0, sum999 = 0;
+    size_t idx95 = request_num * 0.95, idx99 = request_num * 0.99, idx999 = request_num * 0.999;
     // printf("idx95: %ld idx99: %ld idx999: %ld\n", idx95, idx99, idx999);
-    // for (size_t i = 0; i < request_num; i++) {
-    //     printf("%ld ", histogram[i]);
-    // }
+    for (size_t i = 1; i < request_num; i++) {
+        if (histogram[i] < histogram[i-1]) {
+            printf("sort wrong! %lu: %lu %lu: %lu\n", i, histogram[i], i-1, histogram[i-1]);
+            // return;
+        }
+        // printf("%ld ", histogram[i]);
+    }
     // printf("\n");
 
     for (size_t i = idx95; i < request_num; i++) {
@@ -254,6 +265,7 @@ int run() {
             (double)request_cnt / run_time * 1000000000, (double)total_latency / request_cnt / 1000);
     print_tail_latency(args, request_cnt);
 
+    free(args[0].histogram);
     return terminate();
 }
 
@@ -288,8 +300,7 @@ void *subtask(void *args) {
 
         pthread_mutex_lock(&mutex);
         add_nano_to_timespec(&deadline, gap);
-        if (r->issued < i && r->issued - r->finished < QUEUE_DEPTH) {
-            // printf("issued %lu key %lu ofs %lu\n", r->issued, req_arr[r->issued]->key, req_arr[r->issued]->ofs);
+        while (r->issued < i && r->issued - r->finished < QUEUE_DEPTH) {
             traverse(encode(0), req_arr[r->issued++]);
         }
         pthread_cond_timedwait(&cond, &mutex, &deadline);
@@ -297,7 +308,6 @@ void *subtask(void *args) {
 
         req_arr[i] = init_request(key, r);
         // printf("inireq %lu key %lu ofs %lu\n", i, req_arr[i]->key, req_arr[i]->ofs);
-        clock_gettime(CLOCK_REALTIME, &now);
 
         // int type = rand() % 100;
         // if (type < read_ratio) {
@@ -316,8 +326,6 @@ void *subtask(void *args) {
     }
     pthread_cond_destroy(&cond);
     pthread_mutex_destroy(&mutex);
-
-    printf("thread %lu issued all requsts\n", r->index);
 
     while (r->issued < r->op_count) {
         while (r->issued < r->op_count && r->issued - r->finished < QUEUE_DEPTH) {
@@ -338,30 +346,32 @@ void *print_and_poll(void *args) {
     size_t deadline = get_nano(now) + gap, elapsed = 0;
 
     while (now_op_done < request_cnt) {
-        while (get_nano(now) < deadline) {
+        // while (get_nano(now) < deadline) {
+            now_op_done = 0;
             for (size_t i = 0; i < worker_num; i++) {
                 if (r[i].finished < r[i].op_count) {
                     traverse_complete(&r[i].local_ring);
                 }
+                now_op_done += r[i].finished;
             }
-            clock_gettime(CLOCK_REALTIME, &now);
-        }
-        elapsed = get_nano(now) - deadline + gap;
-        deadline = get_nano(now) + gap;
+            // clock_gettime(CLOCK_REALTIME, &now);
+        // }
+        // elapsed = get_nano(now) - deadline + gap;
+        // deadline = get_nano(now) + gap;
 
-        for (size_t i = 0; i < worker_num; i++) {
-            now_op[i] = r[i].finished;
-        }
+        // for (size_t i = 0; i < worker_num; i++) {
+            // now_op[i] = r[i].finished;
+        // }
 
-        now_op_done = 0;
-        for (size_t i = 0; i < worker_num; i++) {
-            printf("thread %ld %f op/s\n", i, 1E9 * (now_op[i] - old_op[i]) / elapsed);
-            old_op[i] = now_op[i];
-            now_op_done += now_op[i];
-        }
+        // now_op_done = 0;
+        // for (size_t i = 0; i < worker_num; i++) {
+        //     printf("thread %ld %f op/s\n", i, 1E9 * (now_op[i] - old_op[i]) / elapsed);
+        //     old_op[i] = now_op[i];
+        //     now_op_done += now_op[i];
+        // }
 
-        printf("total %f op/s now_op_done %lu\n", 1E9 * (now_op_done - old_op_done) / elapsed, now_op_done);
-        old_op_done = now_op_done;
+        // printf("total %f op/s now_op_done %lu\n", 1E9 * (now_op_done - old_op_done) / elapsed, now_op_done);
+        // old_op_done = now_op_done;
     }
 }
 

@@ -70,7 +70,7 @@ typedef struct {
     struct io_uring local_ring;
     size_t finished;
     size_t issued;
-    long *histogram;
+    size_t *histogram;
 } WorkerArg;
 
 typedef struct {
