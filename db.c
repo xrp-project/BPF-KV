@@ -269,7 +269,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
 }
 
 void start_workers(pthread_t *tids, WorkerArg *args) {
-    pthread_create(&tids[worker_num], NULL, print_status, (void *)args);
+    // pthread_create(&tids[worker_num], NULL, print_status, (void *)args);
     for (size_t i = 0; i < worker_num; i++) {
         pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
         // spdk_env_thread_launch_pinned(args[i].index, subtask, (void*)&args[i]);
@@ -277,7 +277,7 @@ void start_workers(pthread_t *tids, WorkerArg *args) {
 }
 
 void terminate_workers(pthread_t *tids, WorkerArg *args) {
-    for (size_t i = 0; i < worker_num + 1; i++) {
+    for (size_t i = 0; i < worker_num; i++) {
         pthread_join(tids[i], NULL);
     }
     // spdk_env_thread_wait_all();
@@ -330,6 +330,7 @@ void traverse_complete(void *arg, const struct spdk_nvme_cpl *completion) {
 
             // __atomic_fetch_add(req->counter, 1, __ATOMIC_SEQ_CST);
             // __atomic_fetch_add(req->timer, latency, __ATOMIC_SEQ_CST);
+            // printf("finished %lu\n", req->warg->finished);
             req->warg->histogram[req->warg->finished] = latency;
             req->warg->finished++;
             req->warg->timer += latency;
@@ -339,17 +340,17 @@ void traverse_complete(void *arg, const struct spdk_nvme_cpl *completion) {
             //         1000000 * (req->start.tv_sec - start_tv.tv_sec) + (req->start.tv_usec - start_tv.tv_usec),
             //         1000000 * end.tv_sec + end.tv_usec,
             //         latency);
-            if (req->warg->issued >= req->warg->op_count) {
+            // if (req->warg->issued >= req->warg->op_count) {
                 spdk_free(req->buff);
                 free(req);
-            } else {
-                req->warg->issued++;
-                req->key = rand() % max_key;
-                req->is_value = false;
-                clock_gettime(CLOCK_REALTIME, &req->start);
-                ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
-                spdk_read(req, decode(ptr) / BLK_SIZE, 1, traverse_complete);
-            }
+            // } else {
+            //     req->warg->issued++;
+            //     req->key = rand() % max_key;
+            //     req->is_value = false;
+            //     clock_gettime(CLOCK_REALTIME, &req->start);
+            //     ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
+            //     spdk_read(req, decode(ptr) / BLK_SIZE, 1, traverse_complete);
+            // }
         } else {
             Node *node = (Node *)req->buff;
             ptr__t ptr = next_node(req->key, node);
@@ -372,25 +373,32 @@ void spdk_read(Request *req, size_t lba, size_t nlba, spdk_nvme_cmd_cb cb_fn) {
                                        lba, nlba, cb_fn, req, 0)) != 0) {
         switch (rc) {
             case -ENOMEM:
-                printf("-ENOMEM %lu\n", *(req->counter));
+                // printf("-ENOMEM %lu\n", *(req->counter));
                 wait_for_completion(req->qpair, NULL, 0);
                 break;
             default:
-                printf("starting write I/O failed: %d\n", rc);
+                printf("starting read I/O failed: %d\n", rc);
                 exit(1);
         }
     }
 }
 
 int cmp(const void *a, const void *b) {
-    return *(long *)a - *(long *)b;
+    long t = (long)(*(size_t *)a - *(size_t *)b);
+    if (t < 0) {
+        return -1;
+    } else if (t == 0){
+        return 0;
+    } else {
+        return 1;
+    }
 }
 
 void print_tail_latency(WorkerArg* args, size_t request_num) {
-    long *histogram = args[0].histogram;
+    size_t *histogram = args[0].histogram;
     qsort(histogram, request_num, sizeof(long), cmp);
 
-    long sum95 = 0, sum99 = 0, sum999 = 0;
+    size_t sum95 = 0, sum99 = 0, sum999 = 0;
     long idx95 = request_num * 0.95, idx99 = request_num * 0.99, idx999 = request_num * 0.999;
     // printf("idx95: %ld idx99: %ld idx999: %ld\n", idx95, idx99, idx999);
     // for (size_t i = 0; i < request_num; i++) {
@@ -439,57 +447,102 @@ int run() {
     return terminate();
 }
 
+inline size_t get_nano(struct timespec ts) {
+    return 1000000000 * ts.tv_sec + ts.tv_nsec;
+}
+
+void add_nano_to_timespec(struct timespec *x, size_t nano) {
+    x->tv_sec += (x->tv_nsec + nano) / 1000000000;
+    x->tv_nsec = (x->tv_nsec + nano) % 1000000000;
+}
+
 void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
     spdk_unaffinitize_thread();
-    struct spdk_nvme_io_qpair_opts opts;
-    spdk_nvme_ctrlr_get_default_io_qpair_opts(global_ctrlr, &opts, sizeof(opts));
-    opts.delay_cmd_submit = true;
-    opts.io_queue_requests = opts.io_queue_size * entries;
-    r->qpair = spdk_nvme_ctrlr_alloc_io_qpair(global_ctrlr, &opts, sizeof(opts));
-    u_int32_t io_queue_size = opts.io_queue_size;
+    // struct spdk_nvme_io_qpair_opts opts;
+    // spdk_nvme_ctrlr_get_default_io_qpair_opts(global_ctrlr, &opts, sizeof(opts));
+    // opts.delay_cmd_submit = true;
+    // opts.io_queue_requests = opts.io_queue_size * entries;
+    // r->qpair = spdk_nvme_ctrlr_alloc_io_qpair(global_ctrlr, &opts, sizeof(opts));
+    r->qpair = spdk_nvme_ctrlr_alloc_io_qpair(global_ctrlr, NULL, 0);
+    u_int32_t io_queue_size = 64;
 
     srand(r->index);
     printf("thread %ld has %ld ops\n", r->index, r->op_count);
-    size_t window = 128; // Half of the default queue size
+    Request **req_arr = (Request **)malloc(r->op_count * sizeof(Request *));
+    pthread_cond_t cond;
+    pthread_mutex_t mutex;
+    pthread_cond_init(&cond, NULL);
+    pthread_mutex_init(&mutex, NULL);
+    struct timespec now, deadline;
+    clock_gettime(CLOCK_REALTIME, &now);
+    size_t gap = 1000000000 / req_per_sec;
+    deadline = now;
+    int rc = 0;
     
-    r->issued = io_queue_size;
-    for (size_t i = 0; i < io_queue_size; i++) {
-        // Move the window
-        // while (i - r->counter > window) {
-        //     wait_for_completion(r->qpair, NULL, 0);
-        // }
-
+    for (size_t i = 0; i < r->op_count; i++) {
         key__t key = rand() % max_key;
         val__t val;
 
-        get(key, val, r);
-        // wait_for_completion(r->qpair, &(r->counter), i+1);
-    }
-
-    uint64_t interval = g_tsc_rate / req_per_sec / (layer_cnt + 1) * io_queue_size;
-    uint64_t tsc_current = spdk_get_ticks();
-    uint64_t tsc_next_throttle = tsc_current + interval;
-    uint64_t tsc_next_sleep = tsc_current + 5 * g_tsc_rate;
-    if (r->index == 6) {
-        interval /= 2;
-    }
-
-    while (r->finished < r->op_count) {
-        spdk_nvme_qpair_process_completions(r->qpair, 0);
-
-        tsc_current = spdk_get_ticks();
-        while (tsc_current < tsc_next_throttle) {
-            tsc_current = spdk_get_ticks();
+        pthread_mutex_lock(&mutex);
+        add_nano_to_timespec(&deadline, gap);
+        while (r->issued < i) {
+            while (r->issued - r->finished > io_queue_size) {
+                spdk_nvme_qpair_process_completions(r->qpair, 0);
+            }
+            // printf("issued %lu\n", r->issued);
+            Request *req = req_arr[r->issued++];
+            if ((rc = spdk_nvme_ns_cmd_read(req->ns, req->qpair, req->buff,
+                                       0, 1, traverse_complete, req, 0)) != 0) {
+                printf("starting read I/O failed: %s\n", strerror(rc));
+                exit(1);
+            }
         }
-        tsc_next_throttle = tsc_current + interval;
+        pthread_cond_timedwait(&cond, &mutex, &deadline);
+        pthread_mutex_unlock(&mutex);
 
-        if (r->index == 6 && tsc_current > tsc_next_sleep) {
-            sleep(5);
-            tsc_current = spdk_get_ticks();
-            tsc_next_sleep = tsc_current + 5 * g_tsc_rate;
-        }
+        req_arr[i] = init_request(global_ns, r->qpair, NULL, key, NULL, r);
+        clock_gettime(CLOCK_REALTIME, &(req_arr[i]->start));
     }
+
+    pthread_cond_destroy(&cond);
+    pthread_mutex_destroy(&mutex);
+
+    while (r->issued < r->op_count) {
+        while (r->issued - r->finished > io_queue_size) {
+            spdk_nvme_qpair_process_completions(r->qpair, 0);
+        }
+        // printf("issued %lu\n", r->issued);
+        Request *req = req_arr[r->issued++];
+        spdk_read(req, 0, 1, traverse_complete);
+    }
+    wait_for_completion(r->qpair, &r->finished, r->op_count);
+    free(req_arr);
+    printf("thread %lu finishes %lu\n", r->index, r->finished);
+    
+    // uint64_t interval = g_tsc_rate / req_per_sec / (layer_cnt + 1) * io_queue_size;
+    // uint64_t tsc_current = spdk_get_ticks();
+    // uint64_t tsc_next_throttle = tsc_current + interval;
+    // uint64_t tsc_next_sleep = tsc_current + 10 * g_tsc_rate;
+    // if (r->index == 6) {
+    //     interval /= 2;
+    // }
+
+    // while (r->finished < r->op_count) {
+    //     spdk_nvme_qpair_process_completions(r->qpair, 0);
+
+    //     tsc_current = spdk_get_ticks();
+    //     while (tsc_current < tsc_next_throttle) {
+    //         tsc_current = spdk_get_ticks();
+    //     }
+    //     tsc_next_throttle = tsc_current + interval;
+
+    //     if (r->index == 6 && tsc_current > tsc_next_sleep) {
+    //         sleep(10);
+    //         tsc_current = spdk_get_ticks();
+    //         tsc_next_sleep = tsc_current + 10 * g_tsc_rate;
+    //     }
+    // }
     // printf("thread %lu finishes %lu ops\n", r->index, r->finished);
 }
 
@@ -497,34 +550,37 @@ void *print_status(void *args) {
     WorkerArg *r = (WorkerArg *)args;
     spdk_unaffinitize_thread();
 
-    size_t op_done;
-    unsigned int sleep_sec = 1;
-    struct timespec start, end;
-    size_t pre_tot = 0;
-    size_t pre_op[worker_num], now_op[worker_num];
-    for (size_t i = 0; i < worker_num; i++) {
-        pre_op[i] = 0;
-    }
-    clock_gettime(CLOCK_REALTIME, &start);
+    pthread_cond_t cond;
+    pthread_mutex_t mutex;
+    pthread_cond_init(&cond, NULL);
+    pthread_mutex_init(&mutex, NULL);
+    size_t now_op_done = 0, old_op_done = 0;
+    size_t old_op[worker_num], now_op[worker_num];
+    struct timespec now, deadline;
+    clock_gettime(CLOCK_REALTIME, &now);
+    deadline = now;
+    memset(old_op, 0, worker_num * sizeof(size_t));
+    memset(now_op, 0, worker_num * sizeof(size_t));
 
-    while (op_done < request_cnt) {
-        sleep(sleep_sec);
+    while (now_op_done < request_cnt) {
+        pthread_mutex_lock(&mutex);
+        deadline.tv_sec++;
+        pthread_cond_timedwait(&cond, &mutex, &deadline);
+        pthread_mutex_unlock(&mutex);
+
         for (size_t i = 0; i < worker_num; i++) {
             now_op[i] = r[i].finished;
         }
-        clock_gettime(CLOCK_REALTIME, &end);
-        long interval = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
-        op_done = 0;
-        for (size_t i = 0; i < worker_num; i++) {
-            printf("thread %ld %f op/s\n", i, (double)(now_op[i] - pre_op[i]) / interval * 1000000000);
-            pre_op[i] = now_op[i];
 
-            op_done += now_op[i];
+        now_op_done = 0;
+        for (size_t i = 0; i < worker_num; i++) {
+            printf("thread %ld %lu op/s\n", i, now_op[i] - old_op[i]);
+            old_op[i] = now_op[i];
+            now_op_done += now_op[i];
         }
-        printf("total %f op/s\n", (double)(op_done - pre_tot) / interval * 1000000000);
-        
-        start = end;
-        pre_tot = op_done;
+
+        printf("total %lu op/s now_op_done %lu\n", now_op_done - old_op_done);
+        old_op_done = now_op_done;
     }
 }
 

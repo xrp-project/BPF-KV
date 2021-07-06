@@ -53,7 +53,7 @@ typedef struct {
     long timer;
     size_t finished;
     size_t issued;
-    long *histogram;
+    size_t *histogram;
 } WorkerArg;
 
 typedef struct {
@@ -112,6 +112,10 @@ ptr__t decode(ptr__t ptr) {
 int load();
 
 int run();
+
+size_t get_nano(struct timespec ts);
+
+void add_nano_to_timespec(struct timespec *x, size_t nano);
 
 void *subtask(void *args);
 
