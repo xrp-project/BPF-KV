@@ -44,7 +44,7 @@ typedef struct _Log {
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
-#define QUEUE_DEPTH 64
+#define QUEUE_DEPTH 256
 
 size_t layer_cnt;
 size_t cache_layer = 3;
@@ -108,7 +108,7 @@ void *subtask(void *args);
 
 void build_cache(size_t layer_num);
 
-void *print_and_poll(void *args);
+void *print_status(void *args);
 
 int get(key__t key, val__t val, WorkerArg *r);
 

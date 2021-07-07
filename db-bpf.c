@@ -189,14 +189,14 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
 }
 
 void start_workers(pthread_t *tids, WorkerArg *args) {
-    pthread_create(&tids[worker_num], NULL, print_and_poll, (void *)args);
+    // pthread_create(&tids[worker_num], NULL, print_status, (void *)args);
     for (size_t i = 0; i < worker_num; i++) {
         pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
     }
 }
 
 void terminate_workers(pthread_t *tids, WorkerArg *args) {
-    pthread_join(tids[worker_num], NULL);
+    // pthread_join(tids[worker_num], NULL);
     for (size_t i = 0; i < worker_num; i++) {
         pthread_join(tids[i], NULL);
         close(args[i].db_handler);
@@ -300,79 +300,70 @@ void *subtask(void *args) {
 
         pthread_mutex_lock(&mutex);
         add_nano_to_timespec(&deadline, gap);
-        while (r->issued < i && r->issued - r->finished < QUEUE_DEPTH) {
+        while (r->issued < i) {
+            while (r->issued - r->finished >= QUEUE_DEPTH) {
+                traverse_complete(&r->local_ring);
+            }
             traverse(encode(0), req_arr[r->issued++]);
         }
         pthread_cond_timedwait(&cond, &mutex, &deadline);
         pthread_mutex_unlock(&mutex);
 
         req_arr[i] = init_request(key, r);
-        // printf("inireq %lu key %lu ofs %lu\n", i, req_arr[i]->key, req_arr[i]->ofs);
-
-        // int type = rand() % 100;
-        // if (type < read_ratio) {
-        //     get(key, val, r);
-        // } else if (type < read_ratio + rmw_ratio) {
-        //     clock_gettime(CLOCK_REALTIME, &start);
-        //     read_modify_write(key, val, r->db_handler);
-        //     clock_gettime(CLOCK_REALTIME, &end);
-        // } else {
-        //     sprintf(val, "%63d", rand());
-
-        //     clock_gettime(CLOCK_REALTIME, &start);
-        //     update(key, val, r->db_handler);
-        //     clock_gettime(CLOCK_REALTIME, &end);
-        // }
     }
     pthread_cond_destroy(&cond);
     pthread_mutex_destroy(&mutex);
 
     while (r->issued < r->op_count) {
-        while (r->issued < r->op_count && r->issued - r->finished < QUEUE_DEPTH) {
-            traverse(encode(0), req_arr[r->issued++]);
+        while (r->issued - r->finished >= QUEUE_DEPTH) {
+            traverse_complete(&r->local_ring);
         }
+        traverse(encode(0), req_arr[r->issued++]);
+    }
+    while (r->finished < r->op_count) {
+        traverse_complete(&r->local_ring);
     }
     free(req_arr);
     printf("thread %lu finishes %lu\n", r->index, r->finished);
 }
 
-void *print_and_poll(void *args) {
+void *print_status(void *args) {
     WorkerArg *r = (WorkerArg *)args;
 
-    size_t now_op_done = 0, old_op_done = 0, gap = 1000000000;
+    pthread_cond_t cond;
+    pthread_mutex_t mutex;
+    pthread_cond_init(&cond, NULL);
+    pthread_mutex_init(&mutex, NULL);
+    size_t now_op_done = 0, old_op_done = 0;
     size_t old_op[worker_num], now_op[worker_num];
-    struct timespec now;
+    struct timespec now, deadline;
     clock_gettime(CLOCK_REALTIME, &now);
-    size_t deadline = get_nano(now) + gap, elapsed = 0;
+    deadline = now;
+    memset(old_op, 0, worker_num * sizeof(size_t));
+    memset(now_op, 0, worker_num * sizeof(size_t));
 
     while (now_op_done < request_cnt) {
-        // while (get_nano(now) < deadline) {
-            now_op_done = 0;
-            for (size_t i = 0; i < worker_num; i++) {
-                if (r[i].finished < r[i].op_count) {
-                    traverse_complete(&r[i].local_ring);
-                }
-                now_op_done += r[i].finished;
-            }
-            // clock_gettime(CLOCK_REALTIME, &now);
-        // }
-        // elapsed = get_nano(now) - deadline + gap;
-        // deadline = get_nano(now) + gap;
+        pthread_mutex_lock(&mutex);
+        deadline.tv_sec++;
+        pthread_cond_timedwait(&cond, &mutex, &deadline);
+        pthread_mutex_unlock(&mutex);
 
-        // for (size_t i = 0; i < worker_num; i++) {
-            // now_op[i] = r[i].finished;
-        // }
+        for (size_t i = 0; i < worker_num; i++) {
+            now_op[i] = r[i].finished;
+        }
 
-        // now_op_done = 0;
-        // for (size_t i = 0; i < worker_num; i++) {
-        //     printf("thread %ld %f op/s\n", i, 1E9 * (now_op[i] - old_op[i]) / elapsed);
-        //     old_op[i] = now_op[i];
-        //     now_op_done += now_op[i];
-        // }
+        now_op_done = 0;
+        for (size_t i = 0; i < worker_num; i++) {
+            printf("thread %ld %lu op/s\n", i, now_op[i] - old_op[i]);
+            old_op[i] = now_op[i];
+            now_op_done += now_op[i];
+        }
 
-        // printf("total %f op/s now_op_done %lu\n", 1E9 * (now_op_done - old_op_done) / elapsed, now_op_done);
-        // old_op_done = now_op_done;
+        printf("total %lu op/s now_op_done %lu\n", now_op_done - old_op_done, now_op_done);
+        old_op_done = now_op_done;
     }
+    pthread_cond_destroy(&cond);
+    pthread_mutex_destroy(&mutex);
 }
 
 int get(key__t key, val__t val, WorkerArg *r) {
