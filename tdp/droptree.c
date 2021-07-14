@@ -21,7 +21,7 @@ unsigned long ddp_pass_func(struct ddp_key dk)
 	// memcpy(&hn, dk.data, sizeof(struct halfnode));
 	struct halfnode *hn = (struct halfnode *)dk.data;
 
-	if (hn->type == 2)
+	if (key == 4444)
 	{
 		unsigned long len = 5;
 		return len;
