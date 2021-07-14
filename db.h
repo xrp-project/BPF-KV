@@ -117,6 +117,8 @@ size_t get_nano(struct timespec ts);
 
 void add_nano_to_timespec(struct timespec *x, size_t nano);
 
+bool early_than(struct timespec *x, struct timespec *y);
+
 void *subtask(void *args);
 
 void *print_status(void *args);

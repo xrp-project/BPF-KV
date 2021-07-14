@@ -456,24 +456,25 @@ void add_nano_to_timespec(struct timespec *x, size_t nano) {
     x->tv_nsec = (x->tv_nsec + nano) % 1000000000;
 }
 
+inline bool early_than(struct timespec *x, struct timespec *y) {
+    return x->tv_sec < y->tv_sec || (x->tv_sec == y->tv_sec && x->tv_nsec < y->tv_nsec);
+}
+
 void *subtask(void *args) {
     WorkerArg *r = (WorkerArg*)args;
     spdk_unaffinitize_thread();
-    // struct spdk_nvme_io_qpair_opts opts;
-    // spdk_nvme_ctrlr_get_default_io_qpair_opts(global_ctrlr, &opts, sizeof(opts));
+    struct spdk_nvme_io_qpair_opts opts;
+    spdk_nvme_ctrlr_get_default_io_qpair_opts(global_ctrlr, &opts, sizeof(opts));
     // opts.delay_cmd_submit = true;
     // opts.io_queue_requests = opts.io_queue_size * entries;
     // r->qpair = spdk_nvme_ctrlr_alloc_io_qpair(global_ctrlr, &opts, sizeof(opts));
     r->qpair = spdk_nvme_ctrlr_alloc_io_qpair(global_ctrlr, NULL, 0);
-    u_int32_t io_queue_size = 64;
+    u_int32_t io_queue_size = opts.io_queue_size;
+    // printf("io_queue_size %lu\n", io_queue_size);
 
     srand(r->index);
     printf("thread %ld has %ld ops\n", r->index, r->op_count);
     Request **req_arr = (Request **)malloc(r->op_count * sizeof(Request *));
-    pthread_cond_t cond;
-    pthread_mutex_t mutex;
-    pthread_cond_init(&cond, NULL);
-    pthread_mutex_init(&mutex, NULL);
     struct timespec now, deadline;
     clock_gettime(CLOCK_REALTIME, &now);
     size_t gap = 1000000000 / req_per_sec;
@@ -481,69 +482,39 @@ void *subtask(void *args) {
     int rc = 0;
     
     for (size_t i = 0; i < r->op_count; i++) {
-        key__t key = rand() % max_key;
-        val__t val;
-
-        pthread_mutex_lock(&mutex);
-        add_nano_to_timespec(&deadline, gap);
-        while (r->issued < i) {
-            while (r->issued - r->finished > io_queue_size) {
+        // 1. busy polling until the new deadline
+        while (early_than(&now, &deadline)) {
+            if (i > r->finished) {
                 spdk_nvme_qpair_process_completions(r->qpair, 0);
             }
-            // printf("issued %lu\n", r->issued);
-            Request *req = req_arr[r->issued++];
-            if ((rc = spdk_nvme_ns_cmd_read(req->ns, req->qpair, req->buff,
-                                       0, 1, traverse_complete, req, 0)) != 0) {
-                printf("starting read I/O failed: %s\n", strerror(rc));
-                exit(1);
-            }
+            clock_gettime(CLOCK_REALTIME, &now);
         }
-        pthread_cond_timedwait(&cond, &mutex, &deadline);
-        pthread_mutex_unlock(&mutex);
+        add_nano_to_timespec(&deadline, gap);
 
-        req_arr[i] = init_request(global_ns, r->qpair, NULL, key, NULL, r);
-        clock_gettime(CLOCK_REALTIME, &(req_arr[i]->start));
-    }
+        // 2. init the request
+        key__t key = rand() % max_key;
+        Request *req = init_request(global_ns, r->qpair, NULL, key, NULL, r);
 
-    pthread_cond_destroy(&cond);
-    pthread_mutex_destroy(&mutex);
-
-    while (r->issued < r->op_count) {
-        while (r->issued - r->finished > io_queue_size) {
+        // 3. ensure queue is not overflowed
+        while (i - r->finished >= io_queue_size) {
             spdk_nvme_qpair_process_completions(r->qpair, 0);
         }
-        // printf("issued %lu\n", r->issued);
-        Request *req = req_arr[r->issued++];
-        spdk_read(req, 0, 1, traverse_complete);
+        
+        // 4. issue the request
+        clock_gettime(CLOCK_REALTIME, &req->start);
+        if ((rc = spdk_nvme_ns_cmd_read(req->ns, req->qpair, req->buff,
+                                    0, 1, traverse_complete, req, 0)) != 0) {
+            printf("starting read I/O failed: %s\n", strerror(rc));
+            exit(1);
+        }
+        now = req->start;
     }
-    wait_for_completion(r->qpair, &r->finished, r->op_count);
-    free(req_arr);
+
+    // 5. wait for the remaining requests
+    while (r->finished < r->op_count) {
+        spdk_nvme_qpair_process_completions(r->qpair, 0);
+    }
     printf("thread %lu finishes %lu\n", r->index, r->finished);
-    
-    // uint64_t interval = g_tsc_rate / req_per_sec / (layer_cnt + 1) * io_queue_size;
-    // uint64_t tsc_current = spdk_get_ticks();
-    // uint64_t tsc_next_throttle = tsc_current + interval;
-    // uint64_t tsc_next_sleep = tsc_current + 10 * g_tsc_rate;
-    // if (r->index == 6) {
-    //     interval /= 2;
-    // }
-
-    // while (r->finished < r->op_count) {
-    //     spdk_nvme_qpair_process_completions(r->qpair, 0);
-
-    //     tsc_current = spdk_get_ticks();
-    //     while (tsc_current < tsc_next_throttle) {
-    //         tsc_current = spdk_get_ticks();
-    //     }
-    //     tsc_next_throttle = tsc_current + interval;
-
-    //     if (r->index == 6 && tsc_current > tsc_next_sleep) {
-    //         sleep(10);
-    //         tsc_current = spdk_get_ticks();
-    //         tsc_next_sleep = tsc_current + 10 * g_tsc_rate;
-    //     }
-    // }
-    // printf("thread %lu finishes %lu ops\n", r->index, r->finished);
 }
 
 void *print_status(void *args) {
