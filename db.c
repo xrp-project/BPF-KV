@@ -483,22 +483,17 @@ void *subtask(void *args) {
     
     for (size_t i = 0; i < r->op_count; i++) {
         // 1. busy polling until the new deadline
-        while (early_than(&now, &deadline)) {
-            if (i > r->finished) {
-                spdk_nvme_qpair_process_completions(r->qpair, 0);
-            }
-            clock_gettime(CLOCK_REALTIME, &now);
-        }
-        add_nano_to_timespec(&deadline, gap);
+        // while (early_than(&now, &deadline)) {
+        //     if (i > r->finished) {
+        //         spdk_nvme_qpair_process_completions(r->qpair, 0);
+        //     }
+        //     clock_gettime(CLOCK_REALTIME, &now);
+        // }
+        // add_nano_to_timespec(&deadline, gap);
 
         // 2. init the request
         key__t key = rand() % max_key;
         Request *req = init_request(global_ns, r->qpair, NULL, key, NULL, r);
-
-        // 3. ensure queue is not overflowed
-        while (i - r->finished >= io_queue_size) {
-            spdk_nvme_qpair_process_completions(r->qpair, 0);
-        }
         
         // 4. issue the request
         clock_gettime(CLOCK_REALTIME, &req->start);
@@ -507,7 +502,12 @@ void *subtask(void *args) {
             printf("starting read I/O failed: %s\n", strerror(rc));
             exit(1);
         }
-        now = req->start;
+
+        // 3. ensure queue is not overflowed
+        while (i - r->finished != -1) {
+            spdk_nvme_qpair_process_completions(r->qpair, 0);
+        }
+        // now = req->start;
     }
 
     // 5. wait for the remaining requests
