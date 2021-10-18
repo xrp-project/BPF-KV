@@ -1,0 +1,73 @@
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 1 layers, 1000000 requests, and 1 threads
+1 blocks in total, max key is 31
+thread 0 has 1000000 ops
+thread 0 finishes 1000000
+Average throughput: 180754.941715 op/s latency: 5.168487 usec
+95%   latency: 6.421158 us
+99%   latency: 10.382705 us
+99.9% latency: 38.493039 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 2 layers, 1000000 requests, and 1 threads
+32 blocks in total, max key is 961
+thread 0 has 1000000 ops
+thread 0 finishes 1000000
+Average throughput: 122937.867729 op/s latency: 7.771512 usec
+95%   latency: 9.157639 us
+99%   latency: 13.694006 us
+99.9% latency: 38.535063 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 3 layers, 1000000 requests, and 1 threads
+993 blocks in total, max key is 29791
+thread 0 has 1000000 ops
+thread 0 finishes 1000000
+Average throughput: 88498.107434 op/s latency: 10.938449 usec
+95%   latency: 12.528270 us
+99%   latency: 17.003093 us
+99.9% latency: 38.785963 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 4 layers, 1000000 requests, and 1 threads
+30784 blocks in total, max key is 923521
+thread 0 has 1000000 ops
+thread 0 finishes 1000000
+Average throughput: 70104.604555 op/s latency: 13.897700 usec
+95%   latency: 15.554402 us
+99%   latency: 20.000214 us
+99.9% latency: 37.638810 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 5 layers, 1000000 requests, and 1 threads
+954305 blocks in total, max key is 28629151
+thread 0 has 1000000 ops
+thread 0 finishes 1000000
+Average throughput: 58093.448486 op/s latency: 16.842261 usec
+95%   latency: 18.644060 us
+99%   latency: 23.092136 us
+99.9% latency: 38.128411 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 1 threads
+29583456 blocks in total, max key is 887503681
+thread 0 has 1000000 ops
+thread 0 finishes 1000000
+Average throughput: 49769.492382 op/s latency: 19.720248 usec
+95%   latency: 21.512465 us
+99%   latency: 25.981703 us
+99.9% latency: 38.593502 us
+Done!
+
