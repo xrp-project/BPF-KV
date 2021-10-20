@@ -1,0 +1,324 @@
+[2021-10-19 21:48:13.522017] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:48:13.522068] [ DPDK EAL parameters: [2021-10-19 21:48:13.522077] simple_kv [2021-10-19 21:48:13.522083] -l 0-5 [2021-10-19 21:48:13.522089] --log-level=lib.eal:6 [2021-10-19 21:48:13.522094] --log-level=lib.cryptodev:5 [2021-10-19 21:48:13.522100] --log-level=user1:6 [2021-10-19 21:48:13.522106] --iova-mode=pa [2021-10-19 21:48:13.522112] --base-virtaddr=0x200000000000 [2021-10-19 21:48:13.522117] --match-allocations [2021-10-19 21:48:13.522123] --file-prefix=spdk0 [2021-10-19 21:48:13.522128] --proc-type=auto [2021-10-19 21:48:13.522134] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 1 threads
+29583456 blocks in total, max key is 887503681
+thread 0 has 1000000 ops
+thread 0 finishes 1000000
+Average throughput: 48645.920131 op/s latency: 20.178812 usec
+95%   latency: 22.566819 us
+99%   latency: 28.706296 us
+99.9% latency: 44.891991 us
+Done!
+[2021-10-19 21:48:34.233516] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:48:34.233561] [ DPDK EAL parameters: [2021-10-19 21:48:34.233571] simple_kv [2021-10-19 21:48:34.233577] -l 0-5 [2021-10-19 21:48:34.233583] --log-level=lib.eal:6 [2021-10-19 21:48:34.233589] --log-level=lib.cryptodev:5 [2021-10-19 21:48:34.233595] --log-level=user1:6 [2021-10-19 21:48:34.233601] --iova-mode=pa [2021-10-19 21:48:34.233608] --base-virtaddr=0x200000000000 [2021-10-19 21:48:34.233614] --match-allocations [2021-10-19 21:48:34.233620] --file-prefix=spdk0 [2021-10-19 21:48:34.233625] --proc-type=auto [2021-10-19 21:48:34.233632] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 2 threads
+29583456 blocks in total, max key is 887503681
+thread 1 has 500000 ops
+thread 0 has 500000 ops
+thread 1 finishes 500000
+thread 0 finishes 500000
+Average throughput: 94706.919843 op/s latency: 20.645104 usec
+95%   latency: 25.076430 us
+99%   latency: 36.602935 us
+99.9% latency: 54.822736 us
+Done!
+[2021-10-19 21:48:44.951232] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:48:44.951280] [ DPDK EAL parameters: [2021-10-19 21:48:44.951289] simple_kv [2021-10-19 21:48:44.951295] -l 0-5 [2021-10-19 21:48:44.951302] --log-level=lib.eal:6 [2021-10-19 21:48:44.951308] --log-level=lib.cryptodev:5 [2021-10-19 21:48:44.951314] --log-level=user1:6 [2021-10-19 21:48:44.951319] --iova-mode=pa [2021-10-19 21:48:44.951325] --base-virtaddr=0x200000000000 [2021-10-19 21:48:44.951331] --match-allocations [2021-10-19 21:48:44.951337] --file-prefix=spdk0 [2021-10-19 21:48:44.951343] --proc-type=auto [2021-10-19 21:48:44.951349] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 3 threads
+29583456 blocks in total, max key is 887503681
+thread 2 has 333333 ops
+thread 1 has 333333 ops
+thread 0 has 333334 ops
+thread 2 finishes 333333
+thread 1 finishes 333333
+thread 0 finishes 333334
+Average throughput: 138950.899723 op/s latency: 21.041769 usec
+95%   latency: 27.366074 us
+99%   latency: 43.622487 us
+99.9% latency: 53.806565 us
+Done!
+[2021-10-19 21:48:52.308960] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:48:52.309004] [ DPDK EAL parameters: [2021-10-19 21:48:52.309013] simple_kv [2021-10-19 21:48:52.309020] -l 0-5 [2021-10-19 21:48:52.309026] --log-level=lib.eal:6 [2021-10-19 21:48:52.309032] --log-level=lib.cryptodev:5 [2021-10-19 21:48:52.309038] --log-level=user1:6 [2021-10-19 21:48:52.309044] --iova-mode=pa [2021-10-19 21:48:52.309050] --base-virtaddr=0x200000000000 [2021-10-19 21:48:52.309056] --match-allocations [2021-10-19 21:48:52.309068] --file-prefix=spdk0 [2021-10-19 21:48:52.309074] --proc-type=auto [2021-10-19 21:48:52.309080] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 4 threads
+29583456 blocks in total, max key is 887503681
+thread 3 has 250000 ops
+thread 2 has 250000 ops
+thread 1 has 250000 ops
+thread 0 has 250000 ops
+thread 3 finishes 250000
+thread 2 finishes 250000
+thread 0 finishes 250000
+thread 1 finishes 250000
+Average throughput: 181554.844175 op/s latency: 21.448894 usec
+95%   latency: 29.892861 us
+99%   latency: 50.207692 us
+99.9% latency: 65.805503 us
+Done!
+[2021-10-19 21:48:57.979007] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:48:57.979051] [ DPDK EAL parameters: [2021-10-19 21:48:57.979061] simple_kv [2021-10-19 21:48:57.979067] -l 0-5 [2021-10-19 21:48:57.979074] --log-level=lib.eal:6 [2021-10-19 21:48:57.979080] --log-level=lib.cryptodev:5 [2021-10-19 21:48:57.979086] --log-level=user1:6 [2021-10-19 21:48:57.979092] --iova-mode=pa [2021-10-19 21:48:57.979098] --base-virtaddr=0x200000000000 [2021-10-19 21:48:57.979104] --match-allocations [2021-10-19 21:48:57.979110] --file-prefix=spdk0 [2021-10-19 21:48:57.979116] --proc-type=auto [2021-10-19 21:48:57.979122] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 5 threads
+29583456 blocks in total, max key is 887503681
+thread 4 has 200000 ops
+thread 3 has 200000 ops
+thread 2 has 200000 ops
+thread 1 has 200000 ops
+thread 0 has 200000 ops
+thread 4 finishes 200000
+thread 3 finishes 200000
+thread 2 finishes 200000
+thread 1 finishes 200000
+thread 0 finishes 200000
+Average throughput: 221549.340590 op/s latency: 21.885676 usec
+95%   latency: 31.949741 us
+99%   latency: 51.421800 us
+99.9% latency: 66.697502 us
+Done!
+[2021-10-19 21:49:02.655653] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:49:02.655698] [ DPDK EAL parameters: [2021-10-19 21:49:02.655708] simple_kv [2021-10-19 21:49:02.655714] -l 0-5 [2021-10-19 21:49:02.655720] --log-level=lib.eal:6 [2021-10-19 21:49:02.655726] --log-level=lib.cryptodev:5 [2021-10-19 21:49:02.655733] --log-level=user1:6 [2021-10-19 21:49:02.655739] --iova-mode=pa [2021-10-19 21:49:02.655745] --base-virtaddr=0x200000000000 [2021-10-19 21:49:02.655751] --match-allocations [2021-10-19 21:49:02.655757] --file-prefix=spdk0 [2021-10-19 21:49:02.655763] --proc-type=auto [2021-10-19 21:49:02.655769] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 6 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 166666 ops
+thread 4 has 166666 ops
+thread 3 has 166667 ops
+thread 2 has 166667 ops
+thread 1 has 166667 ops
+thread 0 has 166667 ops
+thread 4 finishes 166666
+thread 5 finishes 166666
+thread 2 finishes 166667
+thread 3 finishes 166667
+thread 0 finishes 166667
+thread 1 finishes 166667
+Average throughput: 260776.203776 op/s latency: 22.307856 usec
+95%   latency: 34.019027 us
+99%   latency: 56.102046 us
+99.9% latency: 103.909696 us
+Done!
+[2021-10-19 21:49:06.654134] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:49:06.654179] [ DPDK EAL parameters: [2021-10-19 21:49:06.654188] simple_kv [2021-10-19 21:49:06.654195] -l 0-5 [2021-10-19 21:49:06.654201] --log-level=lib.eal:6 [2021-10-19 21:49:06.654207] --log-level=lib.cryptodev:5 [2021-10-19 21:49:06.654213] --log-level=user1:6 [2021-10-19 21:49:06.654218] --iova-mode=pa [2021-10-19 21:49:06.654225] --base-virtaddr=0x200000000000 [2021-10-19 21:49:06.654230] --match-allocations [2021-10-19 21:49:06.654236] --file-prefix=spdk0 [2021-10-19 21:49:06.654242] --proc-type=auto [2021-10-19 21:49:06.654247] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 7 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 142857 ops
+thread 6 has 142857 ops
+thread 4 has 142857 ops
+thread 3 has 142857 ops
+thread 2 has 142857 ops
+thread 1 has 142857 ops
+thread 0 has 142858 ops
+thread 5 finishes 142857
+thread 0 finishes 142858
+thread 4 finishes 142857
+thread 6 finishes 142857
+thread 1 finishes 142857
+thread 3 finishes 142857
+thread 2 finishes 142857
+Average throughput: 251388.815612 op/s latency: 25.833240 usec
+95%   latency: 105.975891 us
+99%   latency: 412.748165 us
+99.9% latency: 3667.711769 us
+Done!
+[2021-10-19 21:49:10.795584] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:49:10.795628] [ DPDK EAL parameters: [2021-10-19 21:49:10.795637] simple_kv [2021-10-19 21:49:10.795644] -l 0-5 [2021-10-19 21:49:10.795650] --log-level=lib.eal:6 [2021-10-19 21:49:10.795656] --log-level=lib.cryptodev:5 [2021-10-19 21:49:10.795661] --log-level=user1:6 [2021-10-19 21:49:10.795667] --iova-mode=pa [2021-10-19 21:49:10.795673] --base-virtaddr=0x200000000000 [2021-10-19 21:49:10.795678] --match-allocations [2021-10-19 21:49:10.795684] --file-prefix=spdk0 [2021-10-19 21:49:10.795689] --proc-type=auto [2021-10-19 21:49:10.795695] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 8 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 125000 ops
+thread 6 has 125000 ops
+thread 7 has 125000 ops
+thread 4 has 125000 ops
+thread 3 has 125000 ops
+thread 2 has 125000 ops
+thread 1 has 125000 ops
+thread 0 has 125000 ops
+thread 6 finishes 125000
+thread 2 finishes 125000
+thread 3 finishes 125000
+thread 7 finishes 125000
+thread 5 finishes 125000
+thread 0 finishes 125000
+thread 1 finishes 125000
+thread 4 finishes 125000
+Average throughput: 249415.453668 op/s latency: 28.461517 usec
+95%   latency: 159.546908 us
+99%   latency: 681.030157 us
+99.9% latency: 6350.219371 us
+Done!
+[2021-10-19 21:49:14.968536] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:49:14.968580] [ DPDK EAL parameters: [2021-10-19 21:49:14.968589] simple_kv [2021-10-19 21:49:14.968595] -l 0-5 [2021-10-19 21:49:14.968601] --log-level=lib.eal:6 [2021-10-19 21:49:14.968606] --log-level=lib.cryptodev:5 [2021-10-19 21:49:14.968612] --log-level=user1:6 [2021-10-19 21:49:14.968617] --iova-mode=pa [2021-10-19 21:49:14.968623] --base-virtaddr=0x200000000000 [2021-10-19 21:49:14.968628] --match-allocations [2021-10-19 21:49:14.968634] --file-prefix=spdk0 [2021-10-19 21:49:14.968639] --proc-type=auto [2021-10-19 21:49:14.968645] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 9 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 111111 ops
+thread 6 has 111111 ops
+thread 7 has 111111 ops
+thread 8 has 111111 ops
+thread 4 has 111111 ops
+thread 3 has 111111 ops
+thread 2 has 111111 ops
+thread 1 has 111111 ops
+thread 0 has 111112 ops
+thread 3 finishes 111111
+thread 5 finishes 111111
+thread 6 finishes 111111
+thread 2 finishes 111111
+thread 4 finishes 111111
+thread 8 finishes 111111
+thread 0 finishes 111112
+thread 1 finishes 111111
+thread 7 finishes 111111
+Average throughput: 238247.569450 op/s latency: 32.151049 usec
+95%   latency: 233.079590 us
+99%   latency: 1047.867796 us
+99.9% latency: 10015.682596 us
+Done!
+[2021-10-19 21:49:19.329541] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:49:19.329585] [ DPDK EAL parameters: [2021-10-19 21:49:19.329593] simple_kv [2021-10-19 21:49:19.329599] -l 0-5 [2021-10-19 21:49:19.329605] --log-level=lib.eal:6 [2021-10-19 21:49:19.329611] --log-level=lib.cryptodev:5 [2021-10-19 21:49:19.329622] --log-level=user1:6 [2021-10-19 21:49:19.329628] --iova-mode=pa [2021-10-19 21:49:19.329634] --base-virtaddr=0x200000000000 [2021-10-19 21:49:19.329639] --match-allocations [2021-10-19 21:49:19.329645] --file-prefix=spdk0 [2021-10-19 21:49:19.329650] --proc-type=auto [2021-10-19 21:49:19.329656] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 10 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 100000 ops
+thread 6 has 100000 ops
+thread 7 has 100000 ops
+thread 8 has 100000 ops
+thread 9 has 100000 ops
+thread 4 has 100000 ops
+thread 3 has 100000 ops
+thread 2 has 100000 ops
+thread 1 has 100000 ops
+thread 0 has 100000 ops
+thread 4 finishes 100000
+thread 7 finishes 100000
+thread 5 finishes 100000
+thread 0 finishes 100000
+thread 1 finishes 100000
+thread 3 finishes 100000
+thread 2 finishes 100000
+thread 8 finishes 100000
+thread 9 finishes 100000
+thread 6 finishes 100000
+Average throughput: 241886.343899 op/s latency: 34.711441 usec
+95%   latency: 284.055101 us
+99%   latency: 1303.004792 us
+99.9% latency: 12328.988287 us
+Done!
+[2021-10-19 21:49:23.628036] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:49:23.628082] [ DPDK EAL parameters: [2021-10-19 21:49:23.628091] simple_kv [2021-10-19 21:49:23.628097] -l 0-5 [2021-10-19 21:49:23.628102] --log-level=lib.eal:6 [2021-10-19 21:49:23.628108] --log-level=lib.cryptodev:5 [2021-10-19 21:49:23.628113] --log-level=user1:6 [2021-10-19 21:49:23.628119] --iova-mode=pa [2021-10-19 21:49:23.628124] --base-virtaddr=0x200000000000 [2021-10-19 21:49:23.628130] --match-allocations [2021-10-19 21:49:23.628135] --file-prefix=spdk0 [2021-10-19 21:49:23.628141] --proc-type=auto [2021-10-19 21:49:23.628147] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 11 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 90909 ops
+thread 6 has 90909 ops
+thread 7 has 90909 ops
+thread 8 has 90909 ops
+thread 9 has 90909 ops
+thread 10 has 90909 ops
+thread 4 has 90909 ops
+thread 3 has 90909 ops
+thread 2 has 90909 ops
+thread 1 has 90909 ops
+thread 0 has 90910 ops
+thread 9 finishes 90909
+thread 6 finishes 90909
+thread 0 finishes 90910
+thread 7 finishes 90909
+thread 10 finishes 90909
+thread 1 finishes 90909
+thread 8 finishes 90909
+thread 5 finishes 90909
+thread 4 finishes 90909
+thread 3 finishes 90909
+thread 2 finishes 90909
+Average throughput: 245167.203227 op/s latency: 39.226578 usec
+95%   latency: 374.084783 us
+99%   latency: 1751.697518 us
+99.9% latency: 12472.222653 us
+Done!
+[2021-10-19 21:49:27.871064] Starting SPDK v21.10-pre git sha1 690783a3a / DPDK 21.05.0 initialization...
+[2021-10-19 21:49:27.871109] [ DPDK EAL parameters: [2021-10-19 21:49:27.871117] simple_kv [2021-10-19 21:49:27.871123] -l 0-5 [2021-10-19 21:49:27.871129] --log-level=lib.eal:6 [2021-10-19 21:49:27.871135] --log-level=lib.cryptodev:5 [2021-10-19 21:49:27.871141] --log-level=user1:6 [2021-10-19 21:49:27.871147] --iova-mode=pa [2021-10-19 21:49:27.871152] --base-virtaddr=0x200000000000 [2021-10-19 21:49:27.871158] --match-allocations [2021-10-19 21:49:27.871164] --file-prefix=spdk0 [2021-10-19 21:49:27.871169] --proc-type=auto [2021-10-19 21:49:27.871175] ]
+EAL: No available 1048576 kB hugepages reported
+TELEMETRY: No legacy callbacks, legacy socket not created
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 1000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 83333 ops
+thread 6 has 83333 ops
+thread 7 has 83333 ops
+thread 8 has 83333 ops
+thread 9 has 83333 ops
+thread 10 has 83333 ops
+thread 11 has 83333 ops
+thread 4 has 83333 ops
+thread 3 has 83334 ops
+thread 2 has 83334 ops
+thread 1 has 83334 ops
+thread 0 has 83334 ops
+thread 10 finishes 83333
+thread 6 finishes 83333
+thread 5 finishes 83333
+thread 1 finishes 83334
+thread 7 finishes 83333
+thread 3 finishes 83334
+thread 0 finishes 83334
+thread 4 finishes 83333
+thread 11 finishes 83333
+thread 8 finishes 83333
+thread 9 finishes 83333
+thread 2 finishes 83334
+Average throughput: 246696.215298 op/s latency: 43.306127 usec
+95%   latency: 455.657039 us
+99%   latency: 2159.046912 us
+99.9% latency: 12686.017941 us
+Done!

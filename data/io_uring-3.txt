@@ -2,20 +2,20 @@ Run the test of 1000000 requests
 3724 locks
 993 blocks in total, max key is 29791
 thread 0 op_count 1000000
-Average throughput: 35864.254496 op/s latency: 27.661651 usec
-95%   latency: 30.890371 us
-99%   latency: 35.967800 us
-99.9% latency: 65.577361 us
+Average throughput: 36390.732558 op/s latency: 27.287977 usec
+95%   latency: 30.033207 us
+99%   latency: 33.637710 us
+99.9% latency: 55.199805 us
 Done!
 Run the test of 1000000 requests
 3724 locks
 993 blocks in total, max key is 29791
 thread 1 op_count 500000
 thread 0 op_count 500000
-Average throughput: 54730.099023 op/s latency: 36.317139 usec
-95%   latency: 42.989968 us
-99%   latency: 61.111477 us
-99.9% latency: 160.478550 us
+Average throughput: 55239.084433 op/s latency: 35.917345 usec
+95%   latency: 40.388702 us
+99%   latency: 51.001009 us
+99.9% latency: 96.686488 us
 Done!
 Run the test of 1000000 requests
 3724 locks
@@ -23,64 +23,64 @@ Run the test of 1000000 requests
 thread 0 op_count 333334
 thread 2 op_count 333333
 thread 1 op_count 333333
-Average throughput: 80533.724490 op/s latency: 36.921476 usec
-95%   latency: 47.372008 us
-99%   latency: 74.084517 us
-99.9% latency: 223.466769 us
+Average throughput: 81413.322261 op/s latency: 36.556054 usec
+95%   latency: 42.460633 us
+99%   latency: 57.646340 us
+99.9% latency: 113.488754 us
 Done!
 Run the test of 1000000 requests
 3724 locks
 993 blocks in total, max key is 29791
 thread 1 op_count 250000
-thread 2 op_count 250000
 thread 0 op_count 250000
+thread 2 op_count 250000
 thread 3 op_count 250000
-Average throughput: 95305.243391 op/s latency: 41.567844 usec
-95%   latency: 59.112281 us
-99%   latency: 89.575283 us
-99.9% latency: 317.935359 us
+Average throughput: 96553.923650 op/s latency: 41.003538 usec
+95%   latency: 54.094691 us
+99%   latency: 70.525610 us
+99.9% latency: 152.240724 us
 Done!
 Run the test of 1000000 requests
 3724 locks
 993 blocks in total, max key is 29791
-thread 1 op_count 200000
 thread 0 op_count 200000
-thread 2 op_count 200000
 thread 3 op_count 200000
+thread 2 op_count 200000
+thread 1 op_count 200000
 thread 4 op_count 200000
-Average throughput: 108533.037890 op/s latency: 45.550015 usec
-95%   latency: 68.859197 us
-99%   latency: 105.577322 us
-99.9% latency: 408.837806 us
+Average throughput: 110157.986962 op/s latency: 44.872588 usec
+95%   latency: 63.117563 us
+99%   latency: 82.062933 us
+99.9% latency: 199.416584 us
 Done!
 Run the test of 1000000 requests
 3724 locks
 993 blocks in total, max key is 29791
-thread 1 op_count 166667
-thread 2 op_count 166667
 thread 0 op_count 166667
+thread 2 op_count 166667
+thread 1 op_count 166667
 thread 3 op_count 166667
 thread 4 op_count 166666
 thread 5 op_count 166666
-Average throughput: 119762.824701 op/s latency: 49.506153 usec
-95%   latency: 76.182157 us
-99%   latency: 113.211194 us
-99.9% latency: 415.831002 us
+Average throughput: 122212.859449 op/s latency: 48.616424 usec
+95%   latency: 68.818408 us
+99%   latency: 82.051088 us
+99.9% latency: 136.070211 us
 Done!
 Run the test of 1000000 requests
 3724 locks
 993 blocks in total, max key is 29791
 thread 0 op_count 142858
 thread 1 op_count 142857
-thread 3 op_count 142857
 thread 2 op_count 142857
+thread 3 op_count 142857
 thread 4 op_count 142857
 thread 6 op_count 142857
 thread 5 op_count 142857
-Average throughput: 129593.502088 op/s latency: 53.136508 usec
-95%   latency: 89.777786 us
-99%   latency: 156.706183 us
-99.9% latency: 782.310325 us
+Average throughput: 132267.924303 op/s latency: 52.146648 usec
+95%   latency: 76.323161 us
+99%   latency: 94.450286 us
+99.9% latency: 200.180473 us
 Done!
 Run the test of 1000000 requests
 3724 locks
@@ -88,87 +88,87 @@ Run the test of 1000000 requests
 thread 0 op_count 125000
 thread 1 op_count 125000
 thread 2 op_count 125000
-thread 3 op_count 125000
-thread 5 op_count 125000
-thread 7 op_count 125000
 thread 4 op_count 125000
+thread 5 op_count 125000
 thread 6 op_count 125000
-Average throughput: 140413.436828 op/s latency: 56.078720 usec
-95%   latency: 92.478025 us
-99%   latency: 147.307056 us
-99.9% latency: 636.643985 us
+thread 3 op_count 125000
+thread 7 op_count 125000
+Average throughput: 142478.214352 op/s latency: 55.090867 usec
+95%   latency: 83.476793 us
+99%   latency: 107.471939 us
+99.9% latency: 268.344493 us
 Done!
 Run the test of 1000000 requests
 3724 locks
 993 blocks in total, max key is 29791
-thread 0 op_count 111112
 thread 1 op_count 111111
+thread 0 op_count 111112
 thread 2 op_count 111111
-thread 3 op_count 111111
-thread 7 op_count 111111
-thread 5 op_count 111111
 thread 4 op_count 111111
+thread 5 op_count 111111
+thread 3 op_count 111111
 thread 6 op_count 111111
 thread 8 op_count 111111
-Average throughput: 151398.315439 op/s latency: 58.536103 usec
-95%   latency: 97.732873 us
-99%   latency: 154.235488 us
-99.9% latency: 641.584746 us
+thread 7 op_count 111111
+Average throughput: 153009.239328 op/s latency: 57.864410 usec
+95%   latency: 91.410590 us
+99%   latency: 127.812080 us
+99.9% latency: 418.107124 us
 Done!
 Run the test of 1000000 requests
 3724 locks
 993 blocks in total, max key is 29791
 thread 1 op_count 100000
-thread 2 op_count 100000
 thread 0 op_count 100000
+thread 2 op_count 100000
 thread 3 op_count 100000
 thread 4 op_count 100000
-thread 9 op_count 100000
-thread 5 op_count 100000
-thread 8 op_count 100000
-thread 7 op_count 100000
 thread 6 op_count 100000
-Average throughput: 154796.190460 op/s latency: 63.326241 usec
-95%   latency: 112.084345 us
-99%   latency: 184.782556 us
-99.9% latency: 814.659013 us
+thread 7 op_count 100000
+thread 8 op_count 100000
+thread 5 op_count 100000
+thread 9 op_count 100000
+Average throughput: 157322.169414 op/s latency: 62.517544 usec
+95%   latency: 99.706460 us
+99%   latency: 128.093566 us
+99.9% latency: 299.151974 us
 Done!
 Run the test of 1000000 requests
 3724 locks
 993 blocks in total, max key is 29791
-thread 0 op_count 90910
 thread 1 op_count 90909
+thread 0 op_count 90910
 thread 2 op_count 90909
 thread 3 op_count 90909
 thread 4 op_count 90909
-thread 7 op_count 90909
 thread 5 op_count 90909
 thread 9 op_count 90909
+thread 6 op_count 90909
+thread 7 op_count 90909
 thread 8 op_count 90909
 thread 10 op_count 90909
-thread 6 op_count 90909
-Average throughput: 158076.396531 op/s latency: 67.845189 usec
-95%   latency: 129.651816 us
-99%   latency: 233.104098 us
-99.9% latency: 1161.659843 us
+Average throughput: 161447.021966 op/s latency: 66.515781 usec
+95%   latency: 113.352722 us
+99%   latency: 160.253130 us
+99.9% latency: 508.087013 us
 Done!
 Run the test of 1000000 requests
 3724 locks
 993 blocks in total, max key is 29791
-thread 1 op_count 83334
 thread 0 op_count 83334
+thread 1 op_count 83334
 thread 2 op_count 83334
-thread 3 op_count 83334
 thread 4 op_count 83333
+thread 3 op_count 83334
+thread 8 op_count 83333
 thread 6 op_count 83333
 thread 7 op_count 83333
 thread 9 op_count 83333
 thread 11 op_count 83333
-thread 8 op_count 83333
 thread 5 op_count 83333
 thread 10 op_count 83333
-Average throughput: 167874.658012 op/s latency: 70.298854 usec
-95%   latency: 135.976919 us
-99%   latency: 229.713689 us
-99.9% latency: 990.351987 us
+Average throughput: 168407.746108 op/s latency: 70.124141 usec
+95%   latency: 127.768521 us
+99%   latency: 192.529573 us
+99.9% latency: 687.591794 us
 Done!
