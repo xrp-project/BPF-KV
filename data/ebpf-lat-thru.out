@@ -1,0 +1,384 @@
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 2 op_count 833334
+thread 1 op_count 833334
+thread 0 op_count 833334
+thread 3 op_count 833334
+thread 4 op_count 833333
+thread 6 op_count 833333
+thread 5 op_count 833333
+thread 7 op_count 833333
+thread 8 op_count 833333
+thread 9 op_count 833333
+thread 11 op_count 833333
+thread 10 op_count 833333
+thread 6 finishes 833333
+thread 5 finishes 833333
+thread 7 finishes 833333
+thread 9 finishes 833333
+thread 11 finishes 833333
+thread 8 finishes 833333
+thread 4 finishes 833333
+thread 0 finishes 833334
+thread 2 finishes 833334
+thread 1 finishes 833334
+thread 3 finishes 833334
+thread 10 finishes 833333
+Average throughput: 59999.639674 op/s latency: 112.257622 usec
+95%   latency: 259.122528 us
+99%   latency: 488.866914 us
+99.9% latency: 2100.043958 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 0 op_count 833334
+thread 1 op_count 833334
+thread 2 op_count 833334
+thread 3 op_count 833334
+thread 4 op_count 833333
+thread 5 op_count 833333
+thread 6 op_count 833333
+thread 8 op_count 833333
+thread 7 op_count 833333
+thread 10 op_count 833333
+thread 11 op_count 833333
+thread 9 op_count 833333
+thread 4 finishes 833333
+thread 5 finishes 833333
+thread 1 finishes 833334
+thread 2 finishes 833334
+thread 3 finishes 833334
+thread 8 finishes 833333
+thread 7 finishes 833333
+thread 6 finishes 833333
+thread 11 finishes 833333
+thread 0 finishes 833334
+thread 10 finishes 833333
+thread 9 finishes 833333
+Average throughput: 119999.615972 op/s latency: 62.797620 usec
+95%   latency: 132.522559 us
+99%   latency: 256.937377 us
+99.9% latency: 1174.828605 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 2 op_count 833334
+thread 0 op_count 833334
+thread 3 op_count 833334
+thread 1 op_count 833334
+thread 4 op_count 833333
+thread 5 op_count 833333
+thread 6 op_count 833333
+thread 7 op_count 833333
+thread 8 op_count 833333
+thread 9 op_count 833333
+thread 10 op_count 833333
+thread 11 op_count 833333
+thread 0 finishes 833334
+thread 4 finishes 833333
+thread 6 finishes 833333
+thread 3 finishes 833334
+thread 8 finishes 833333
+thread 7 finishes 833333
+thread 1 finishes 833334
+thread 2 finishes 833334
+thread 9 finishes 833333
+thread 5 finishes 833333
+thread 11 finishes 833333
+thread 10 finishes 833333
+Average throughput: 180000.832417 op/s latency: 45.541609 usec
+95%   latency: 83.769364 us
+99%   latency: 144.019982 us
+99.9% latency: 577.245463 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 0 op_count 833334
+thread 1 op_count 833334
+thread 2 op_count 833334
+thread 3 op_count 833334
+thread 4 op_count 833333
+thread 6 op_count 833333
+thread 7 op_count 833333
+thread 5 op_count 833333
+thread 9 op_count 833333
+thread 8 op_count 833333
+thread 11 op_count 833333
+thread 10 op_count 833333
+thread 1 finishes 833334
+thread 4 finishes 833333
+thread 0 finishes 833334
+thread 2 finishes 833334
+thread 6 finishes 833333
+thread 3 finishes 833334
+thread 7 finishes 833333
+thread 5 finishes 833333
+thread 9 finishes 833333
+thread 8 finishes 833333
+thread 11 finishes 833333
+thread 10 finishes 833333
+Average throughput: 239998.374888 op/s latency: 37.388477 usec
+95%   latency: 72.505727 us
+99%   latency: 125.488192 us
+99.9% latency: 596.394447 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 0 op_count 833334
+thread 1 op_count 833334
+thread 2 op_count 833334
+thread 3 op_count 833334
+thread 4 op_count 833333
+thread 6 op_count 833333
+thread 5 op_count 833333
+thread 8 op_count 833333
+thread 7 op_count 833333
+thread 9 op_count 833333
+thread 10 op_count 833333
+thread 11 op_count 833333
+thread 1 finishes 833334
+thread 0 finishes 833334
+thread 4 finishes 833333
+thread 2 finishes 833334
+thread 6 finishes 833333
+thread 5 finishes 833333
+thread 3 finishes 833334
+thread 8 finishes 833333
+thread 9 finishes 833333
+thread 10 finishes 833333
+thread 11 finishes 833333
+thread 7 finishes 833333
+Average throughput: 299996.751506 op/s latency: 34.422442 usec
+95%   latency: 62.580679 us
+99%   latency: 101.068096 us
+99.9% latency: 434.800087 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 0 op_count 833334
+thread 1 op_count 833334
+thread 2 op_count 833334
+thread 4 op_count 833333
+thread 5 op_count 833333
+thread 3 op_count 833334
+thread 6 op_count 833333
+thread 7 op_count 833333
+thread 8 op_count 833333
+thread 9 op_count 833333
+thread 10 op_count 833333
+thread 11 op_count 833333
+thread 0 finishes 833334
+thread 2 finishes 833334
+thread 6 finishes 833333
+thread 1 finishes 833334
+thread 5 finishes 833333
+thread 7 finishes 833333
+thread 3 finishes 833334
+thread 4 finishes 833333
+thread 8 finishes 833333
+thread 10 finishes 833333
+thread 11 finishes 833333
+thread 9 finishes 833333
+Average throughput: 359998.972946 op/s latency: 34.450593 usec
+95%   latency: 64.568046 us
+99%   latency: 109.856436 us
+99.9% latency: 480.800992 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 0 op_count 833334
+thread 1 op_count 833334
+thread 2 op_count 833334
+thread 3 op_count 833334
+thread 4 op_count 833333
+thread 6 op_count 833333
+thread 5 op_count 833333
+thread 9 op_count 833333
+thread 7 op_count 833333
+thread 8 op_count 833333
+thread 10 op_count 833333
+thread 11 op_count 833333
+thread 1 finishes 833334
+thread 0 finishes 833334
+thread 2 finishes 833334
+thread 4 finishes 833333
+thread 3 finishes 833334
+thread 9 finishes 833333
+thread 6 finishes 833333
+thread 7 finishes 833333
+thread 5 finishes 833333
+thread 8 finishes 833333
+thread 11 finishes 833333
+thread 10 finishes 833333
+Average throughput: 419998.900970 op/s latency: 38.133721 usec
+95%   latency: 82.661520 us
+99%   latency: 157.455933 us
+99.9% latency: 800.226182 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 1 op_count 833334
+thread 0 op_count 833334
+thread 2 op_count 833334
+thread 3 op_count 833334
+thread 4 op_count 833333
+thread 5 op_count 833333
+thread 7 op_count 833333
+thread 8 op_count 833333
+thread 10 op_count 833333
+thread 9 op_count 833333
+thread 6 op_count 833333
+thread 11 op_count 833333
+thread 1 finishes 833334
+thread 0 finishes 833334
+thread 4 finishes 833333
+thread 5 finishes 833333
+thread 3 finishes 833334
+thread 8 finishes 833333
+thread 2 finishes 833334
+thread 6 finishes 833333
+thread 10 finishes 833333
+thread 7 finishes 833333
+thread 9 finishes 833333
+thread 11 finishes 833333
+Average throughput: 479990.105223 op/s latency: 43.100797 usec
+95%   latency: 106.059884 us
+99%   latency: 218.861848 us
+99.9% latency: 1121.480197 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 0 op_count 833334
+thread 1 op_count 833334
+thread 2 op_count 833334
+thread 4 op_count 833333
+thread 3 op_count 833334
+thread 5 op_count 833333
+thread 6 op_count 833333
+thread 8 op_count 833333
+thread 10 op_count 833333
+thread 7 op_count 833333
+thread 9 op_count 833333
+thread 11 op_count 833333
+thread 0 finishes 833334
+thread 1 finishes 833334
+thread 2 finishes 833334
+thread 5 finishes 833333
+thread 6 finishes 833333
+thread 3 finishes 833334
+thread 4 finishes 833333
+thread 9 finishes 833333
+thread 8 finishes 833333
+thread 11 finishes 833333
+thread 7 finishes 833333
+thread 10 finishes 833333
+Average throughput: 539992.791847 op/s latency: 51.022906 usec
+95%   latency: 155.453017 us
+99%   latency: 364.215122 us
+99.9% latency: 1990.960182 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 0 op_count 833334
+thread 1 op_count 833334
+thread 2 op_count 833334
+thread 3 op_count 833334
+thread 4 op_count 833333
+thread 6 op_count 833333
+thread 5 op_count 833333
+thread 8 op_count 833333
+thread 7 op_count 833333
+thread 9 op_count 833333
+thread 10 op_count 833333
+thread 11 op_count 833333
+thread 0 finishes 833334
+thread 1 finishes 833334
+thread 3 finishes 833334
+thread 2 finishes 833334
+thread 5 finishes 833333
+thread 4 finishes 833333
+thread 6 finishes 833333
+thread 9 finishes 833333
+thread 8 finishes 833333
+thread 7 finishes 833333
+thread 10 finishes 833333
+thread 11 finishes 833333
+Average throughput: 599978.180426 op/s latency: 66.591745 usec
+95%   latency: 265.981441 us
+99%   latency: 679.333657 us
+99.9% latency: 2903.666088 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 1 op_count 833334
+thread 0 op_count 833334
+thread 2 op_count 833334
+thread 3 op_count 833334
+thread 5 op_count 833333
+thread 6 op_count 833333
+thread 4 op_count 833333
+thread 7 op_count 833333
+thread 9 op_count 833333
+thread 8 op_count 833333
+thread 10 op_count 833333
+thread 11 op_count 833333
+thread 3 finishes 833334
+thread 5 finishes 833333
+thread 1 finishes 833334
+thread 0 finishes 833334
+thread 7 finishes 833333
+thread 6 finishes 833333
+thread 2 finishes 833334
+thread 9 finishes 833333
+thread 11 finishes 833333
+thread 4 finishes 833333
+thread 10 finishes 833333
+thread 8 finishes 833333
+Average throughput: 660003.025583 op/s latency: 137.730130 usec
+95%   latency: 906.699345 us
+99%   latency: 2441.119273 us
+99.9% latency: 4753.652241 us
+Done!
+Run the test of 10000000 requests
+110937961 locks
+29583456 blocks in total, max key is 887503681
+thread 1 op_count 833334
+thread 2 op_count 833334
+thread 0 op_count 833334
+thread 3 op_count 833334
+thread 4 op_count 833333
+thread 5 op_count 833333
+thread 6 op_count 833333
+thread 8 op_count 833333
+thread 9 op_count 833333
+thread 7 op_count 833333
+thread 11 op_count 833333
+thread 10 op_count 833333
+thread 2 finishes 833334
+thread 10 finishes 833333
+thread 8 finishes 833333
+thread 5 finishes 833333
+thread 0 finishes 833334
+thread 1 finishes 833334
+thread 4 finishes 833333
+thread 9 finishes 833333
+thread 6 finishes 833333
+thread 3 finishes 833334
+thread 7 finishes 833333
+thread 11 finishes 833333
+Average throughput: 703805.345815 op/s latency: 4332.379491 usec
+95%   latency: 6411.993033 us
+99%   latency: 7423.146550 us
+99.9% latency: 10869.446450 us
+Done!

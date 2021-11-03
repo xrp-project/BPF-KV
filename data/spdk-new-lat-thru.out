@@ -1,0 +1,408 @@
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 5 finishes 833333
+thread 6 finishes 833333
+thread 8 finishes 833333
+thread 7 finishes 833333
+thread 9 finishes 833333
+thread 10 finishes 833333
+thread 11 finishes 833333
+thread 4 finishes 833333
+thread 3 finishes 833334
+thread 2 finishes 833334
+thread 1 finishes 833334
+thread 0 finishes 833334
+Average throughput: 59984.196285 op/s latency: 129.719539 usec
+95%   latency: 415.993311 us
+99%   latency: 498.315027 us
+99.9% latency: 682.729880 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 6 finishes 833333
+thread 5 finishes 833333
+thread 8 finishes 833333
+thread 9 finishes 833333
+thread 7 finishes 833333
+thread 10 finishes 833333
+thread 11 finishes 833333
+thread 4 finishes 833333
+thread 3 finishes 833334
+thread 2 finishes 833334
+thread 1 finishes 833334
+thread 0 finishes 833334
+Average throughput: 119931.766733 op/s latency: 262.837973 usec
+95%   latency: 884.169999 us
+99%   latency: 1220.732851 us
+99.9% latency: 3399.148595 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 5 finishes 833333
+thread 6 finishes 833333
+thread 7 finishes 833333
+thread 9 finishes 833333
+thread 10 finishes 833333
+thread 8 finishes 833333
+thread 11 finishes 833333
+thread 4 finishes 833333
+thread 3 finishes 833334
+thread 2 finishes 833334
+thread 1 finishes 833334
+thread 0 finishes 833334
+Average throughput: 179859.658094 op/s latency: 444.937233 usec
+95%   latency: 1762.947976 us
+99%   latency: 3225.043515 us
+99.9% latency: 13222.117184 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 6 finishes 833333
+thread 5 finishes 833333
+thread 7 finishes 833333
+thread 8 finishes 833333
+thread 9 finishes 833333
+thread 10 finishes 833333
+thread 11 finishes 833333
+thread 4 finishes 833333
+thread 3 finishes 833334
+thread 2 finishes 833334
+thread 1 finishes 833334
+thread 0 finishes 833334
+Average throughput: 239757.697907 op/s latency: 638.224783 usec
+95%   latency: 2777.181030 us
+99%   latency: 6494.305992 us
+99.9% latency: 23881.135741 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 5 finishes 833333
+thread 6 finishes 833333
+thread 7 finishes 833333
+thread 8 finishes 833333
+thread 9 finishes 833333
+thread 10 finishes 833333
+thread 11 finishes 833333
+thread 4 finishes 833333
+thread 3 finishes 833334
+thread 2 finishes 833334
+thread 1 finishes 833334
+thread 0 finishes 833334
+Average throughput: 299598.528902 op/s latency: 815.277420 usec
+95%   latency: 4648.891839 us
+99%   latency: 13845.437103 us
+99.9% latency: 25453.984171 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 2 has 833334 ops
+thread 5 finishes 833333
+thread 6 finishes 833333
+thread 7 finishes 833333
+thread 8 finishes 833333
+thread 9 finishes 833333
+thread 10 finishes 833333
+thread 11 finishes 833333
+thread 4 finishes 833333
+thread 3 finishes 833334
+thread 1 finishes 833334
+thread 0 finishes 833334
+thread 2 finishes 833334
+Average throughput: 359079.152887 op/s latency: 1235.673093 usec
+95%   latency: 9483.022635 us
+99%   latency: 24705.586176 us
+99.9% latency: 50634.423265 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 5 finishes 833333
+thread 6 finishes 833333
+thread 8 finishes 833333
+thread 7 finishes 833333
+thread 9 finishes 833333
+thread 10 finishes 833333
+thread 11 finishes 833333
+thread 4 finishes 833333
+thread 3 finishes 833334
+thread 2 finishes 833334
+thread 1 finishes 833334
+thread 0 finishes 833334
+Average throughput: 419133.979222 op/s latency: 1326.338583 usec
+95%   latency: 10232.636876 us
+99%   latency: 24341.171861 us
+99.9% latency: 47680.702327 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 10 finishes 833333
+thread 9 finishes 833333
+thread 1 finishes 833334
+thread 8 finishes 833333
+thread 6 finishes 833333
+thread 3 finishes 833334
+thread 11 finishes 833333
+thread 0 finishes 833334
+thread 5 finishes 833333
+thread 7 finishes 833333
+thread 2 finishes 833334
+thread 4 finishes 833333
+Average throughput: 474815.758495 op/s latency: 5727.173752 usec
+95%   latency: 36136.218063 us
+99%   latency: 60656.020198 us
+99.9% latency: 101672.612723 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 6 finishes 833333
+thread 8 finishes 833333
+thread 4 finishes 833333
+thread 11 finishes 833333
+thread 1 finishes 833334
+thread 5 finishes 833333
+thread 10 finishes 833333
+thread 7 finishes 833333
+thread 9 finishes 833333
+thread 2 finishes 833334
+thread 3 finishes 833334
+thread 0 finishes 833334
+Average throughput: 493497.030988 op/s latency: 6037.173380 usec
+95%   latency: 34942.966553 us
+99%   latency: 56934.457034 us
+99.9% latency: 82672.744344 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 0 finishes 833334
+thread 6 finishes 833333
+thread 3 finishes 833334
+thread 7 finishes 833333
+thread 10 finishes 833333
+thread 5 finishes 833333
+thread 9 finishes 833333
+thread 4 finishes 833333
+thread 2 finishes 833334
+thread 8 finishes 833333
+thread 11 finishes 833333
+thread 1 finishes 833334
+Average throughput: 488307.025005 op/s latency: 6183.063623 usec
+95%   latency: 36998.985714 us
+99%   latency: 61486.568777 us
+99.9% latency: 98671.022254 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 10 finishes 833333
+thread 5 finishes 833333
+thread 7 finishes 833333
+thread 8 finishes 833333
+thread 6 finishes 833333
+thread 3 finishes 833334
+thread 0 finishes 833334
+thread 1 finishes 833334
+thread 9 finishes 833333
+thread 11 finishes 833333
+thread 4 finishes 833333
+thread 2 finishes 833334
+Average throughput: 471967.525183 op/s latency: 6409.817231 usec
+95%   latency: 38495.761074 us
+99%   latency: 60374.840517 us
+99.9% latency: 90253.411919 us
+Done!
+Initializing NVMe Controllers
+Attached to 0000:01:00.0
+entries 3
+Run: 6 layers, 10000000 requests, and 12 threads
+29583456 blocks in total, max key is 887503681
+thread 5 has 833333 ops
+thread 6 has 833333 ops
+thread 7 has 833333 ops
+thread 8 has 833333 ops
+thread 9 has 833333 ops
+thread 10 has 833333 ops
+thread 11 has 833333 ops
+thread 4 has 833333 ops
+thread 3 has 833334 ops
+thread 2 has 833334 ops
+thread 1 has 833334 ops
+thread 0 has 833334 ops
+thread 8 finishes 833333
+thread 9 finishes 833333
+thread 6 finishes 833333
+thread 7 finishes 833333
+thread 1 finishes 833334
+thread 2 finishes 833334
+thread 5 finishes 833333
+thread 10 finishes 833333
+thread 11 finishes 833333
+thread 0 finishes 833334
+thread 3 finishes 833334
+thread 4 finishes 833333
+Average throughput: 470021.152738 op/s latency: 6405.387829 usec
+95%   latency: 38883.671542 us
+99%   latency: 62943.446951 us
+99.9% latency: 94727.711542 us
+Done!
