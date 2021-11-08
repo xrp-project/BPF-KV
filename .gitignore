@@ -2,4 +2,6 @@
 *.txt
 nndb
 db
+simple_retrieve
 onlyonmachine/
+.idea
