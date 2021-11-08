@@ -19,6 +19,17 @@
 
 #include "db.h"
 
+/* struct used to communicate with BPF function via scratch buffer */
+struct Query {
+    unsigned short found;
+    union {
+        key__t key;
+        val__t value;
+    };
+    ptr__t value_ptr;
+};
+
+
 /* Helper function that terminates the program is pread fails */
 void checked_pread(int fd, void *buf, size_t size, long offset) {
     ssize_t bytes_read = pread(fd, buf, size, offset);
