@@ -8,7 +8,8 @@
 
 
 int key_exists(unsigned long const key, Node *node) {
-    for (int i = 0; i < node->num; ++i) {
+#pragma unroll
+    for (int i = 0; i < NODE_CAPACITY; ++i) {
         if (node->key[i] == key) {
             return 1;
         }
@@ -17,7 +18,8 @@ int key_exists(unsigned long const key, Node *node) {
 }
 
 ptr__t nxt_node(unsigned long key, Node *node) {
-    for (int i = 1; i < node->num; ++i) {
+#pragma unroll
+    for (int i = 1; i < NODE_CAPACITY; ++i) {
         if (key < node->key[i]) {
             return node->ptr[i - 1];
         }
