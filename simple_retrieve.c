@@ -16,12 +16,16 @@
 #include <sys/file.h>
 #include <errno.h>
 #include <ctype.h>
+#include <string.h>
+
+#define USE_BPF
 
 #include "db.h"
 
 /* struct used to communicate with BPF function via scratch buffer */
 struct Query {
     unsigned short found;
+    unsigned short reached_leaf;
     union {
         key__t key;
         val__t value;
@@ -70,6 +74,16 @@ int key_exists(unsigned long const key, Node const *node) {
     return 0;
 }
 
+/* Function using the same bit fiddling that we use in the BPF function */
+void read_value_the_hard_way(int fd, char *retval, ptr__t ptr) {
+    /* Base of the block containing our vale */
+    ptr__t base = decode(ptr) & ~(BLK_SIZE - 1);
+    char buf[BLK_SIZE];
+    checked_pread(fd, &buf, BLK_SIZE, (long) base);
+    ptr__t offset = decode(ptr) & (BLK_SIZE - 1);
+    memcpy(retval, ((char *) &buf + offset), sizeof(val__t));
+}
+
 /**
  * Traverses the B+ tree index and retrieves the value associated with
  * [key] from the heap, if [key] is in the database.
@@ -87,12 +101,53 @@ char *grab_value(char *file_name, unsigned long const key) {
     retval[sizeof(val__t)] = '\0';
 
     /* Open the database */
-    int db_fd = open(file_name, O_RDONLY);
+    // TODO (etm): This is never closed
+    int flags = O_RDONLY;
+#ifdef USE_BPF
+    flags = flags | O_DIRECT;
+#endif
+    int db_fd = open(file_name, flags);
     if (db_fd < 0) {
         perror("failed to open database");
         exit(1);
     }
 
+#ifdef USE_BPF
+#define SYS_IMPOSTER_PREAD64 445
+    /* Set up buffers and query */
+    char buf[0x1000];
+    char scratch[0x1000];
+    memset(&buf, 0, sizeof(buf));
+    memset(&scratch, 0, sizeof(scratch));
+    struct Query *query = (struct Query *) scratch;
+    query->found = 0;
+    query->key = key;
+    query->value_ptr = 0;
+
+    /* Syscall to invoke BPF function that we loaded out-of-band previously */
+    long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, &buf, &scratch, BLK_SIZE, 0);
+    if (ret < 0) {
+        printf("reached leaf? %d\n", query->reached_leaf);
+        printf("result not found\n");
+        fprintf(stderr, "read xrp failed with code %d\n", errno);
+        exit(errno);
+    }
+    if (query->found == 0) {
+        printf("reached leaf? %d\n", query->reached_leaf);
+        printf("result not found\n");
+        exit(1);
+    }
+    printf("query value: %s\n", query->value);
+    memcpy(retval, &query->value, sizeof(query->value));
+    int logfile = open("output.out", O_CREAT | O_WRONLY | O_TRUNC, 0755);
+    if (logfile < 0) {
+        perror("log file failed:");
+        exit(1);
+    }
+    write(logfile, &scratch, 0x1000);
+    write(logfile, &buf, 0x1000);
+    close(logfile);
+#else
     /* Traverse b+ tree index in db to find value */
     Node *const node;
     if (posix_memalign((void **) &node, 512, sizeof(Node))) {
@@ -114,8 +169,10 @@ char *grab_value(char *file_name, unsigned long const key) {
     }
 
     /* Now we're at a leaf node, and ptr points to the log entry */
-    checked_pread(db_fd, retval, sizeof(val__t), (long) decode(ptr));
+//    checked_pread(db_fd, retval, sizeof(val__t), (long) decode(ptr));
+    read_value_the_hard_way(db_fd, retval, ptr);
     free(node);
+#endif
 
     return retval;
 }

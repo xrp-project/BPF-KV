@@ -35,6 +35,7 @@ typedef struct _Log {
 
 struct Query {
     unsigned short found;
+    unsigned short reached_leaf;
     union {
         key__t key;
         val__t value;

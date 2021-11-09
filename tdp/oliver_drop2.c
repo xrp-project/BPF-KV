@@ -66,6 +66,7 @@ unsigned int oliver_pass_func(struct bpf_imposter *context) {
 
     /* Case 2: verify key & submit read for block containing value */
     if (node->type == LEAF) {
+        query->reached_leaf = 1;
         if (!key_exists(query->key, node)) {
             query->found = 0;
             context->done = 1;
