@@ -1,3 +1,8 @@
+/**
+ * BPF program for simple-kv
+ *
+ * Author: etm2131@columbia.edu
+ */
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include "simplekvspec.h"
@@ -8,6 +13,9 @@
 
 
 int key_exists(unsigned long const key, Node *node) {
+    /* Safety: NULL is never passed for node, but mr. verifier doesn't know that */
+    if (node == NULL)
+        return -1;
 #pragma unroll
     for (int i = 0; i < NODE_CAPACITY; ++i) {
         if (node->key[i] == key) {
@@ -18,6 +26,9 @@ int key_exists(unsigned long const key, Node *node) {
 }
 
 ptr__t nxt_node(unsigned long key, Node *node) {
+    /* Safety: NULL is never passed for node, but mr. verifier doesn't know that */
+    if (node == NULL)
+        return -1;
 #pragma unroll
     for (int i = 1; i < NODE_CAPACITY; ++i) {
         if (key < node->key[i]) {
