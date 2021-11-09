@@ -33,6 +33,25 @@ typedef struct _Log {
     val__t val[LOG_CAPACITY];
 } Log;
 
+struct Query {
+    unsigned short found;
+    union {
+        key__t key;
+        val__t value;
+    };
+    ptr__t value_ptr;
+};
+
+#define FILE_MASK ((ptr__t)1 << 63)
+
+ptr__t encode(ptr__t ptr) {
+    return ptr | FILE_MASK;
+}
+
+ptr__t decode(ptr__t ptr) {
+    return ptr & (~FILE_MASK);
+}
+
 // struct
 struct ddp_key{
 	unsigned char data[512];
