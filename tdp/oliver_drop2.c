@@ -36,7 +36,7 @@ ptr__t nxt_node(unsigned long key, Node *node) {
         }
     }
     /* Key wasn't smaller than any of node->key[x], so take the last ptr */
-    return node->ptr[node->num - 1];
+    return node->ptr[NODE_CAPACITY - 1];
 }
 
 
