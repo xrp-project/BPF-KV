@@ -115,21 +115,20 @@ char *grab_value(char *file_name, unsigned long const key) {
 #ifdef USE_BPF
 #define SYS_IMPOSTER_PREAD64 445
     /* Set up buffers and query */
-    char buf[0x1000];
-    char scratch[0x1000];
-    memset(&buf, 0, sizeof(buf));
-    memset(&scratch, 0, sizeof(scratch));
+    char *buf = aligned_alloc(0x1000, 0x1000);
+    char *scratch = aligned_alloc(0x1000, 0x1000);
+    memset(buf, 0, 0x1000);
+    memset(scratch, 0, 0x1000);
+
     struct Query *query = (struct Query *) scratch;
-    query->found = 0;
     query->key = key;
-    query->value_ptr = 0;
 
     /* Syscall to invoke BPF function that we loaded out-of-band previously */
-    long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, &buf, &scratch, BLK_SIZE, 0);
+    long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, 0);
     if (ret < 0) {
         printf("reached leaf? %d\n", query->reached_leaf);
-        printf("result not found\n");
         fprintf(stderr, "read xrp failed with code %d\n", errno);
+        fprintf(stderr, "%s\n", strerror(errno));
         exit(errno);
     }
     if (query->found == 0) {
@@ -138,14 +137,18 @@ char *grab_value(char *file_name, unsigned long const key) {
         exit(1);
     }
     printf("query value: %s\n", query->value);
+
     memcpy(retval, &query->value, sizeof(query->value));
     int logfile = open("output.out", O_CREAT | O_WRONLY | O_TRUNC, 0755);
     if (logfile < 0) {
         perror("log file failed:");
         exit(1);
     }
-    write(logfile, &scratch, 0x1000);
-    write(logfile, &buf, 0x1000);
+    write(logfile, scratch, 0x1000);
+    write(logfile, buf, 0x1000);
+
+    free(buf);
+    free(scratch);
     close(logfile);
 #else
     /* Traverse b+ tree index in db to find value */
@@ -165,6 +168,7 @@ char *grab_value(char *file_name, unsigned long const key) {
     if (!key_exists(key, node)) {
         free(node);
         free(retval);
+        close(db_fd);
         return NULL;
     }
 
@@ -172,6 +176,7 @@ char *grab_value(char *file_name, unsigned long const key) {
 //    checked_pread(db_fd, retval, sizeof(val__t), (long) decode(ptr));
     read_value_the_hard_way(db_fd, retval, ptr);
     free(node);
+    close(db_fd);
 #endif
 
     return retval;
