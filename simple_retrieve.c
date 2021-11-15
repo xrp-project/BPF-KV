@@ -22,18 +22,6 @@
 
 #include "db.h"
 
-/* struct used to communicate with BPF function via scratch buffer */
-struct Query {
-    unsigned short found;
-    unsigned short reached_leaf;
-    union {
-        key__t key;
-        val__t value;
-    };
-    ptr__t value_ptr;
-};
-
-
 /* Helper function that terminates the program is pread fails */
 void checked_pread(int fd, void *buf, size_t size, long offset) {
     ssize_t bytes_read = pread(fd, buf, size, offset);
@@ -126,19 +114,19 @@ char *grab_value(char *file_name, unsigned long const key) {
     /* Syscall to invoke BPF function that we loaded out-of-band previously */
     long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, 0);
     if (ret < 0) {
-        printf("reached leaf? %d\n", query->reached_leaf);
+        printf("reached leaf? %ld\n", query->reached_leaf);
         fprintf(stderr, "read xrp failed with code %d\n", errno);
         fprintf(stderr, "%s\n", strerror(errno));
         exit(errno);
     }
     if (query->found == 0) {
-        printf("reached leaf? %d\n", query->reached_leaf);
+        printf("reached leaf? %ld\n", query->reached_leaf);
         printf("result not found\n");
         exit(1);
     }
     printf("query value: %s\n", query->value);
 
-    memcpy(retval, &query->value, sizeof(query->value));
+    memcpy(retval, query->value, sizeof(query->value));
     int logfile = open("output.out", O_CREAT | O_WRONLY | O_TRUNC, 0755);
     if (logfile < 0) {
         perror("log file failed:");

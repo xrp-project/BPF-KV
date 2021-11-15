@@ -43,6 +43,7 @@ SEC("oliver_pass")
 unsigned int oliver_pass_func(struct bpf_imposter *context) {
     struct Query *query = (struct Query *) context->scratch;
     Node *node = (Node *) context->data;
+    query->prev_node = node->num;
 
     /* Three cases:
      *

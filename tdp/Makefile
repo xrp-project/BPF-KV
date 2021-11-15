@@ -8,6 +8,8 @@ all: drop.o drop2.o droptree.o oliver_drop2.o
 #all: drop.o drop2.o drop3.o
 #all: oliver_drop2.o
 
+oliver_drop2.o: oliver_drop2.c simplekvspec.h ../db_types.h
+
 %.o: %.c
 	$(CLANG) -S \
 	    -target bpf \

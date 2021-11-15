@@ -10,7 +10,7 @@ nndb: nndb.c nndb.h
 
 nnndb: nnndb.c nnndb.h
 
-simple_retrieve: simple_retrieve.c db.h
+simple_retrieve: simple_retrieve.c db.h db_types.h
 
 .PHONY: clean
 clean:
