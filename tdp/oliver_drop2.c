@@ -1,4 +1,4 @@
-/**
+/*
  * BPF program for simple-kv
  *
  * Author: etm2131@columbia.edu
@@ -11,12 +11,12 @@
 #define memcpy(dest, src, n)   __builtin_memcpy((dest), (src), (n))
 #endif
 
+char LICENSE[] SEC("license") = "GPL";
 
-int key_exists(unsigned long const key, Node *node) {
+static __inline int key_exists(unsigned long const key, Node *node) {
     /* Safety: NULL is never passed for node, but mr. verifier doesn't know that */
     if (node == NULL)
         return -1;
-#pragma unroll
     for (int i = 0; i < NODE_CAPACITY; ++i) {
         if (node->key[i] == key) {
             return 1;
@@ -25,11 +25,10 @@ int key_exists(unsigned long const key, Node *node) {
     return 0;
 }
 
-ptr__t nxt_node(unsigned long key, Node *node) {
+static __inline ptr__t nxt_node(unsigned long key, Node *node) {
     /* Safety: NULL is never passed for node, but mr. verifier doesn't know that */
     if (node == NULL)
         return -1;
-#pragma unroll
     for (int i = 1; i < NODE_CAPACITY; ++i) {
         if (key < node->key[i]) {
             return node->ptr[i - 1];
@@ -57,32 +56,43 @@ unsigned int oliver_pass_func(struct bpf_imposter *context) {
      */
 
     /* Case 1: read value into query result */
+    bpf_printk("simplekv-bpf: entered\n");
     if (query->found) {
+        bpf_printk("simplekv-bpf: case 1 - value found\n");
+
         ptr__t offset = decode(query->value_ptr) & (BLK_SIZE - 1);
-        memcpy(&query->value, context->data + offset, sizeof(query->value));
+        memcpy(query->value, context->data + offset, sizeof(query->value));
         context->done = 1;
         return 0;
     }
 
     /* Case 2: verify key & submit read for block containing value */
     if (node->type == LEAF) {
+        bpf_printk("simplekv-bpf: case 2 - verify key & get last block\n");
+
         query->reached_leaf = 1;
         if (!key_exists(query->key, node)) {
             query->found = 0;
             context->done = 1;
+
+            bpf_printk("simplekv-bpf: key doesn't exist\n");
             return 0;
         }
         query->found = 1;
         query->value_ptr = nxt_node(query->key, node);
         /* Need to submit a request for base of the block containing our offset */
         ptr__t base = decode(query->value_ptr) & ~(BLK_SIZE - 1);
-        context->next_addr[0] = base;
+        context->next_addr[0] = encode(base);
         context->size[0] = BLK_SIZE;
+
+        bpf_printk("simplekv-bpf: nextaddr = %0lx\n", context->next_addr[0]);
         return 0;
     }
 
     /* Case 3: at an internal node, keep going */
-    context->next_addr[0] = nxt_node(query->key, node);
+    bpf_printk("simplekv-bpf: case 3 - internal node\n");
+    context->next_addr[0] = encode(nxt_node(query->key, node));
+    bpf_printk("simplekv-bpf: nextaddr = %0lx\n", context->next_addr[0]);
     context->size[0] = BLK_SIZE;
     return 0;
 }
