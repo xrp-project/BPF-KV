@@ -11,11 +11,18 @@
 #define memcpy(dest, src, n)   __builtin_memcpy((dest), (src), (n))
 #endif
 
+
+#ifdef VERBOSE
+#define dbg_print(...) bpf_printk(__VA_ARGS__)
+#else
+#define dbg_print(...)
+#endif
+
 char LICENSE[] SEC("license") = "GPL";
 
 static __inline int key_exists(unsigned long const key, Node *node) {
     /* Safety: NULL is never passed for node, but mr. verifier doesn't know that */
-    bpf_printk("simplekv-bpf: key_exists entered\n");
+    dbg_print("simplekv-bpf: key_exists entered\n");
     if (node == NULL)
         return -1;
     for (int i = 0; i < NODE_CAPACITY; ++i) {
@@ -28,7 +35,7 @@ static __inline int key_exists(unsigned long const key, Node *node) {
 
 static __inline ptr__t nxt_node(unsigned long key, Node *node) {
     /* Safety: NULL is never passed for node, but mr. verifier doesn't know that */
-    bpf_printk("simplekv-bpf: nxt_node entered\n");
+    dbg_print("simplekv-bpf: nxt_node entered\n");
     if (node == NULL)
         return -1;
     for (int i = 1; i < NODE_CAPACITY; ++i) {
@@ -42,29 +49,29 @@ static __inline ptr__t nxt_node(unsigned long key, Node *node) {
 
 
 static __inline void print_query(struct Query *q) {
-    bpf_printk("struct Query {\n");
+    dbg_print("struct Query {\n");
 
-    bpf_printk("\tfound = %ld\n", q->found);
-    bpf_printk("\treached_leaf = %ld\n", q->reached_leaf);
-    bpf_printk("\tprev_key_zero = %ld\n", q->prev_key_zero);
-    bpf_printk("\tkey = %ld\n", q->key);
-    bpf_printk("\tvalue = %s\n", q->value);
-    bpf_printk("\tvalue_ptr = %ld\n", q->value_ptr);
+    dbg_print("\tfound = %ld\n", q->found);
+    dbg_print("\treached_leaf = %ld\n", q->reached_leaf);
+    dbg_print("\tprev_key_zero = %ld\n", q->prev_key_zero);
+    dbg_print("\tkey = %ld\n", q->key);
+    dbg_print("\tvalue = %s\n", q->value);
+    dbg_print("\tvalue_ptr = %ld\n", q->value_ptr);
 
-    bpf_printk("}\n");
+    dbg_print("}\n");
 }
 
 static __inline void print_node(Node *node) {
-    bpf_printk("struct Node {\n");
+    dbg_print("struct Node {\n");
 
-    bpf_printk("\tnum = %ld\n", node->num);
-    bpf_printk("\ttype = %ld\n", node->type);
-    bpf_printk("\tkey[0] = %ld\n", node->key[0]);
-    bpf_printk("\tkey[30] = %ld\n", node->key[NODE_CAPACITY - 1]);
-    bpf_printk("\tptr[0] = 0x%lx\n", node->ptr[0]);
-    bpf_printk("\tptr[30] = 0x%lx\n", node->ptr[NODE_CAPACITY - 1]);
+    dbg_print("\tnum = %ld\n", node->num);
+    dbg_print("\ttype = %ld\n", node->type);
+    dbg_print("\tkey[0] = %ld\n", node->key[0]);
+    dbg_print("\tkey[30] = %ld\n", node->key[NODE_CAPACITY - 1]);
+    dbg_print("\tptr[0] = 0x%lx\n", node->ptr[0]);
+    dbg_print("\tptr[30] = 0x%lx\n", node->ptr[NODE_CAPACITY - 1]);
 
-    bpf_printk("}\n");
+    dbg_print("}\n");
 }
 
 
@@ -86,9 +93,9 @@ unsigned int oliver_pass_func(struct bpf_imposter *context) {
      */
 
     /* Case 1: read value into query result */
-    bpf_printk("simplekv-bpf: entered\n");
+    dbg_print("simplekv-bpf: entered\n");
     if (query->found) {
-        bpf_printk("simplekv-bpf: case 1 - value found\n");
+        dbg_print("simplekv-bpf: case 1 - value found\n");
 
         ptr__t offset = query->value_ptr & (BLK_SIZE - 1);
         memcpy(query->value, context->data + offset, sizeof(query->value));
@@ -98,11 +105,11 @@ unsigned int oliver_pass_func(struct bpf_imposter *context) {
 
     /* Case 2: verify key & submit read for block containing value */
     if (node->type == LEAF) {
-        bpf_printk("simplekv-bpf: case 2 - verify key & get last block\n");
+        dbg_print("simplekv-bpf: case 2 - verify key & get last block\n");
 
         query->reached_leaf = 1;
         if (!key_exists(query->key, node)) {
-            bpf_printk("simplekv-bpf: key doesn't exist\n");
+            dbg_print("simplekv-bpf: key doesn't exist\n");
 
             query->found = 0;
             context->done = 1;
@@ -118,13 +125,13 @@ unsigned int oliver_pass_func(struct bpf_imposter *context) {
     }
 
     /* Case 3: at an internal node, keep going */
-    bpf_printk("simplekv-bpf: case 3 - internal node\n");
+    dbg_print("simplekv-bpf: case 3 - internal node\n");
     context->next_addr[0] = decode(nxt_node(query->key, node));
     context->size[0] = BLK_SIZE;
 
 out:
-    bpf_printk("simplekv-bpf: context->done = %ld\n", context->done);
-    bpf_printk("simplekv-bpf: context->nextaddr = 0x%lx\n", context->next_addr[0]);
+    dbg_print("simplekv-bpf: context->done = %ld\n", context->done);
+    dbg_print("simplekv-bpf: context->nextaddr = 0x%lx\n", context->next_addr[0]);
     print_query(query);
     print_node(node);
     return 0;
