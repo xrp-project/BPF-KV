@@ -32,6 +32,10 @@ long lookup_bpf(int db_fd, struct Query *query) {
 /* Helper function that terminates the program is pread fails */
 void checked_pread(int fd, void *buf, size_t size, long offset) {
     ssize_t bytes_read = pread(fd, buf, size, offset);
+    if (bytes_read < 0) {
+        perror("checked_pread: ");
+        exit(1);
+    }
     if (bytes_read != size) {
         fprintf(stderr, "partial read %ld bytes of Node\n", bytes_read);
         exit(1);

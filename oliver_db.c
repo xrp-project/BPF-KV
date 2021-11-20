@@ -67,7 +67,7 @@ void build_cache(int db_fd, size_t layer_num) {
     }
 
     size_t head = 0, tail = 1;
-    read_node(encode(total_node * sizeof(Node)), &cache[head], db_fd);
+    read_node(encode(0), &cache[head], db_fd);
 
     while (tail < entry_num) {
         for (size_t i = 0; i < cache[head].num; i++) {
@@ -335,14 +335,17 @@ int main(int argc, char *argv[]) {
     }
     
     if (strcmp(argv[1], "--run") == 0) {
-        if (argc < 5) {
+        if (argc < 6) {
             return prompt_help(argc, argv);
         }
         char *db_path = argv[2];
         size_t layer_num, request_num, thread_num;
         layer_num = strtol_or_exit(argv[3], "Invalid number of layers\n");
-        request_num = strtol_or_exit(argv[3], "Invalid number of requests\n");
-        thread_num = strtol_or_exit(argv[3], "Invalid number of threads\n");
+        request_num = strtol_or_exit(argv[4], "Invalid number of requests\n");
+        thread_num = strtol_or_exit(argv[5], "Invalid number of threads\n");
+
+        printf("Running benchmark with %ld layers, %ld requests, and %ld threads\n",
+                    layer_num, request_num, thread_num);
 
         return run(db_path, layer_num, request_num, thread_num);
     }
