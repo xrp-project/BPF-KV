@@ -35,7 +35,7 @@ struct Query {
     /* everything is a long to make debugging in gdb easier */
     long found;
     long reached_leaf;
-    long prev_node;
+    long prev_key_zero;
     key__t key;
     val__t value;
     /*

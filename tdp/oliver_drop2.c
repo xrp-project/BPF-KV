@@ -46,7 +46,7 @@ static __inline void print_query(struct Query *q) {
 
     bpf_printk("\tfound = %ld\n", q->found);
     bpf_printk("\treached_leaf = %ld\n", q->reached_leaf);
-    bpf_printk("\tprev_node = %ld\n", q->prev_node);
+    bpf_printk("\tprev_key_zero = %ld\n", q->prev_key_zero);
     bpf_printk("\tkey = %ld\n", q->key);
     bpf_printk("\tvalue = %s\n", q->value);
     bpf_printk("\tvalue_ptr = %ld\n", q->value_ptr);
@@ -72,7 +72,7 @@ SEC("oliver_pass")
 unsigned int oliver_pass_func(struct bpf_imposter *context) {
     struct Query *query = (struct Query *) context->scratch;
     Node *node = (Node *) context->data;
-    query->prev_node = node->num;
+    query->prev_key_zero = node->key[0];
 
     /* Three cases:
      *
@@ -90,7 +90,7 @@ unsigned int oliver_pass_func(struct bpf_imposter *context) {
     if (query->found) {
         bpf_printk("simplekv-bpf: case 1 - value found\n");
 
-        ptr__t offset = decode(query->value_ptr) & (BLK_SIZE - 1);
+        ptr__t offset = query->value_ptr & (BLK_SIZE - 1);
         memcpy(query->value, context->data + offset, sizeof(query->value));
         context->done = 1;
         goto out;
@@ -109,17 +109,17 @@ unsigned int oliver_pass_func(struct bpf_imposter *context) {
             goto out;
         }
         query->found = 1;
-        query->value_ptr = nxt_node(query->key, node);
+        query->value_ptr = decode(nxt_node(query->key, node));
         /* Need to submit a request for base of the block containing our offset */
-        ptr__t base = decode(query->value_ptr) & ~(BLK_SIZE - 1);
-        context->next_addr[0] = encode(base);
+        ptr__t base = query->value_ptr & ~(BLK_SIZE - 1);
+        context->next_addr[0] = base;
         context->size[0] = BLK_SIZE;
         goto out;
     }
 
     /* Case 3: at an internal node, keep going */
     bpf_printk("simplekv-bpf: case 3 - internal node\n");
-    context->next_addr[0] = encode(nxt_node(query->key, node));
+    context->next_addr[0] = decode(nxt_node(query->key, node));
     context->size[0] = BLK_SIZE;
 
 out:
