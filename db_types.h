@@ -15,6 +15,10 @@ typedef unsigned long ptr__t;
 #define BLK_SIZE 512
 #define BLK_SIZE_LOG 9
 
+// Node-level information
+#define INTERNAL 0
+#define LEAF 1
+
 #define NODE_CAPACITY ((BLK_SIZE - 2 * META_SIZE) / (KEY_SIZE + PTR_SIZE))
 #define LOG_CAPACITY  ((BLK_SIZE) / (VAL_SIZE))
 #define FANOUT NODE_CAPACITY

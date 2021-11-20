@@ -4,4 +4,8 @@ nndb
 db
 simple_retrieve
 onlyonmachine/
+oliver_db
+
+
 .idea
+.vscode
