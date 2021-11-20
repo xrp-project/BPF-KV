@@ -12,7 +12,7 @@ nnndb: nnndb.c nnndb.h
 
 oliver_db: oliver_db.c oliver_db.h
 
-simple_retrieve: simple_retrieve.c db.h db_types.h
+simple_retrieve: simple_retrieve.c db.h db_types.h helpers.c helpers.h
 
 sr: simple_retrieve
 	cp simple_retrieve /home/evan/kv-test/

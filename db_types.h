@@ -51,5 +51,17 @@ struct Query {
     ptr__t value_ptr;
 };
 
+static inline struct Query new_query(long key) {
+    struct Query query = {
+        .found = 0,
+        .reached_leaf = 0,
+        .prev_key_zero = 0,
+        .key = key,
+        .value = { 0 },
+        .value_ptr = 0
+    };
+    return query;
+}
+
 #endif /* DB_TYPES_H */
 

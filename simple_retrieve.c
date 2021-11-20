@@ -16,97 +16,18 @@
 #include <ctype.h>
 #include <string.h>
 
-#define SYS_IMPOSTER_PREAD64 445
-
 #include "db.h"
-
-/* Helper function that terminates the program is pread fails */
-void checked_pread(int fd, void *buf, size_t size, long offset) {
-    ssize_t bytes_read = pread(fd, buf, size, offset);
-    if (bytes_read != size) {
-        fprintf(stderr, "partial read %ld bytes of Node\n", bytes_read);
-        exit(1);
-    }
-}
-
-/**
- * Finds the file offset for the next node to traverse to in the B+ tree
- * @param key
- * @param node
- * @return B+ tree encoded byte offset into the db file
- */
-ptr__t nxt_node(unsigned long key, Node *node) {
-    for (size_t i = 1; i < node->num; ++i) {
-        if (key < node->key[i]) {
-            return node->ptr[i - 1];
-        }
-    }
-    /* Key wasn't smaller than any of node->key[x], so take the last ptr */
-    return node->ptr[node->num - 1];
-}
-
-/**
- * Verifies that [key] exists in the leaf [node]
- * @param key
- * @param node
- * @return 1 if [key] exists, else 0
- */
-int key_exists(unsigned long const key, Node const *node) {
-    for (int i = 0; i < node->num; ++i) {
-        if (node->key[i] == key) {
-            return 1;
-        }
-    }
-    return 0;
-}
+#include "helpers.h"
 
 /* Function using the same bit fiddling that we use in the BPF function */
 void read_value_the_hard_way(int fd, char *retval, ptr__t ptr) {
     /* Base of the block containing our vale */
     ptr__t base = decode(ptr) & ~(BLK_SIZE - 1);
+    printf("base: 0x%lx\n", base);
     char buf[BLK_SIZE];
-    checked_pread(fd, &buf, BLK_SIZE, (long) base);
+    checked_pread(fd, buf, BLK_SIZE, (long) base);
     ptr__t offset = decode(ptr) & (BLK_SIZE - 1);
-    memcpy(retval, ((char *) &buf + offset), sizeof(val__t));
-}
-
-void lookup_bpf(int db_fd, key__t key, char *retval) {
-    /* Set up buffers and query */
-    char *buf = aligned_alloc(0x1000, 0x1000);
-    char *scratch = aligned_alloc(0x1000, 0x1000);
-    memset(buf, 0, 0x1000);
-    memset(scratch, 0, 0x1000);
-
-    struct Query *query = (struct Query *) scratch;
-    query->key = key;
-
-    /* Syscall to invoke BPF function that we loaded out-of-band previously */
-    long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, 0);
-    if (ret < 0) {
-        printf("reached leaf? %ld\n", query->reached_leaf);
-        fprintf(stderr, "read xrp failed with code %d\n", errno);
-        fprintf(stderr, "%s\n", strerror(errno));
-        exit(errno);
-    }
-    if (query->found == 0) {
-        printf("reached leaf? %ld\n", query->reached_leaf);
-        printf("result not found\n");
-        exit(1);
-    }
-    printf("query value: %s\n", query->value);
-
-    memcpy(retval, query->value, sizeof(query->value));
-    int logfile = open("output.out", O_CREAT | O_WRONLY | O_TRUNC, 0755);
-    if (logfile < 0) {
-        perror("log file failed:");
-        exit(1);
-    }
-    write(logfile, scratch, 0x1000);
-    write(logfile, buf, 0x1000);
-
-    free(buf);
-    free(scratch);
-    close(logfile);
+    memcpy(retval, buf + offset, sizeof(val__t));
 }
 
 /**
@@ -138,7 +59,21 @@ char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
     }
 
     if (use_xrp) {
-        lookup_bpf(db_fd, key, retval);
+        struct Query query = new_query(key);
+        long ret = lookup_bpf(db_fd, &query);
+
+        if (ret < 0) {
+            printf("reached leaf? %ld\n", query.reached_leaf);
+            fprintf(stderr, "read xrp failed with code %d\n", errno);
+            fprintf(stderr, "%s\n", strerror(errno));
+            exit(errno);
+        }
+        if (query.found == 0) {
+            printf("reached leaf? %ld\n", query.reached_leaf);
+            printf("result not found\n");
+            exit(1);
+        }
+        memcpy(retval, query.value, sizeof(query.value));
     } else {
         /* Traverse b+ tree index in db to find value */
         Node *const node;
