@@ -20,7 +20,6 @@ size_t worker_num;
 size_t total_node;
 size_t *layer_cap;
 key__t max_key;
-int logfn;
 Node *cache;
 size_t cache_cap;
 
@@ -53,9 +52,7 @@ int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num);
 
 void *subtask(void *args);
 
-void build_cache(size_t layer_num);
-
-int get(key__t key, val__t val, int db_handler, int log_handler);
+void build_cache(int db_fd, size_t layer_num);
 
 ptr__t next_node(key__t key, Node *node);
 
@@ -82,27 +79,5 @@ int compare_nodes(Node *x, Node *y);
 void print_node(ptr__t ptr, Node *node);
 
 void free_globals(void);
-
-static inline long strtol_or_exit(char *str, char *fail_msg) {
-    char *endptr = NULL;
-    errno = 0;
-    long result = strtol(str, &endptr, 10);
-    if (endptr == str || errno != 0) {
-        fprintf(stderr, "%s", fail_msg);
-        exit(1);
-    }
-    return result;
-}
-
-static inline unsigned long strtoul_or_exit(char *str, char *fail_msg) {
-    char *endptr = NULL;
-    errno = 0;
-    long result = strtoul(str, &endptr, 10);
-    if (endptr == str || errno != 0) {
-        fprintf(stderr, "%s", fail_msg);
-        exit(1);
-    }
-    return result;
-}
 
 #endif /* OLIVER_DB_H */

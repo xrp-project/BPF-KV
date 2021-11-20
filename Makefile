@@ -10,7 +10,7 @@ nndb: nndb.c nndb.h
 
 nnndb: nnndb.c nnndb.h
 
-oliver_db: oliver_db.c oliver_db.h
+oliver_db: oliver_db.c oliver_db.h helpers.c helpers.h
 
 simple_retrieve: simple_retrieve.c db.h db_types.h helpers.c helpers.h
 

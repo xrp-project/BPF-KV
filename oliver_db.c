@@ -9,6 +9,7 @@
 #include <errno.h>
 
 #include "oliver_db.h"
+#include "helpers.h"
 
 int get_handler(char *db_path, int flag) {
     int fd = open(db_path, flag | O_DIRECT, 0755);
@@ -19,6 +20,7 @@ int get_handler(char *db_path, int flag) {
     return fd;
 }
 
+/* TODO (etm): Probably want to delete this... seems to be unused */
 int get_log_handler(int flag) {
     int fd = open(LOG_PATH, flag | O_DIRECT, 0755);
     if (fd < 0) {
@@ -28,6 +30,7 @@ int get_log_handler(int flag) {
     return fd;
 }
 
+/* Open database and logfile; calculate number of nodes per layer of B+tree */
 int initialize(size_t layer_num, int mode, char *db_path) {
     int db;
     if (mode == LOAD_MODE) {
@@ -36,12 +39,6 @@ int initialize(size_t layer_num, int mode, char *db_path) {
         db = get_handler(db_path, O_RDONLY);
     }
     
-    if (mode == LOAD_MODE) {
-        logfn = get_log_handler(O_CREAT|O_TRUNC|O_WRONLY);
-    } else {
-        logfn = get_log_handler(O_RDONLY);
-    }
-
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
     total_node = 1;
     layer_cap[0] = 1;
@@ -57,7 +54,8 @@ int initialize(size_t layer_num, int mode, char *db_path) {
     return db;
 }
 
-void build_cache(size_t layer_num) {
+/* Cache the first [layer_num] layers of the tree */
+void build_cache(int db_fd, size_t layer_num) {
     size_t entry_num = 0;
     for (size_t i = 0; i < layer_num; i++) {
         entry_num += layer_cap[i];
@@ -69,11 +67,11 @@ void build_cache(size_t layer_num) {
     }
 
     size_t head = 0, tail = 1;
-    read_node(encode(0), &cache[head], logfn);
+    read_node(encode(total_node * sizeof(Node)), &cache[head], db_fd);
 
     while (tail < entry_num) {
         for (size_t i = 0; i < cache[head].num; i++) {
-            read_node(cache[head].ptr[i], &cache[tail], logfn);
+            read_node(cache[head].ptr[i], &cache[tail], db_fd);
             cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
             tail++;
         }
@@ -203,8 +201,9 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 
 int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num) {
     printf("Run the test of %lu requests\n", request_num);
-    initialize(layer_num, RUN_MODE, db_path);
-    build_cache(layer_num > 3 ? 3 : layer_num);
+    int db_fd = initialize(layer_num, RUN_MODE, db_path);
+    /* Cache up to 3 layers of the B+tree */
+    build_cache(db_fd, layer_num > 3 ? 3 : layer_num);
 
     worker_num = thread_num;
     struct timespec start, end;
@@ -235,37 +234,33 @@ void *subtask(void *args) {
     printf("thread %ld op_count %ld\n", r->index, r->op_count);
     for (size_t i = 0; i < r->op_count; i++) {
         key__t key = rand() % max_key;
-        val__t val;
 
+        /* Time and execute the XRP lookup */
         clock_gettime(CLOCK_REALTIME, &tps);
-        get(key, val, r->db_handler, r->log_handler);
+
+        struct Query query = new_query(key);
+        long retval = lookup_bpf(r->db_handler, &query);
+        
         clock_gettime(CLOCK_REALTIME, &tpe);
         r->timer += 1000000000 * (tpe.tv_sec - tps.tv_sec) + (tpe.tv_nsec - tps.tv_nsec);
 
         /* Parse and check value from db */
         char buf[sizeof(val__t) + 1];
         buf[sizeof(val__t)] = '\0';
-        unsigned long long_val = strtoul_or_exit(buf, "Failed to parse value from db\n");
-        if (key != long_val) {
-            printf("Error! key: %lu val: %s thrd: %ld\n", key, val, r->index);
+        memcpy(buf, query.value, sizeof(val__t));
+        unsigned long long_val = strtoul(buf, NULL, 10);
+
+
+        /* Check result, print errors, etc */
+        if (retval < 0) {
+            fprintf(stderr, "XRP pread failed with code %d\n", errno);
+        } else if (query.found == 0) {
+            fprintf(stderr, "Value for key %ld not found\n", key);
+        } else if (key != long_val) {
+            printf("Error! key: %lu val: %s thrd: %ld\n", key, buf, r->index);
         }      
     }
     return NULL;
-}
-
-int get(key__t key, val__t val, int db_handler, int log_handler) {
-    ptr__t ptr = encode(0);
-    Node *node = malloc(sizeof(Node));
-
-    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
-    memcpy(node, &key, sizeof(key));
-    read_node(ptr, node, db_handler);
-    Log *log = (Log *)node;
-    memcpy(val, log->val[0], VAL_SIZE);
-    return 0;
 }
 
 void print_node(ptr__t ptr, Node *node) {
@@ -287,11 +282,12 @@ void print_log(ptr__t ptr, Log *log) {
 }
 
 void read_node(ptr__t ptr, Node *node, int db_handler) {
-    pread(db_handler, node, sizeof(Node), decode(ptr));
+    checked_pread(db_handler, node, sizeof(Node), decode(ptr));
 }
 
+/* TODO (etm): Probably want to delete; seems unused */
 void read_log(ptr__t ptr, Log *log, int db_handler) {
-    pread(db_handler, log, sizeof(Log), decode(ptr));
+    checked_pread(db_handler, log, sizeof(Log), decode(ptr));
 }
 
 int retrieve_value(ptr__t ptr, val__t val, int db_handler) {
