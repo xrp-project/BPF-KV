@@ -7,9 +7,37 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <errno.h>
+#include <time.h>
+#include <argp.h>
 
 #include "oliver_db.h"
 #include "helpers.h"
+
+struct ArgState {
+    /* Flags */
+    int create;
+    int xrp;
+
+    /* Options */
+    int threads;
+    int requests;
+
+    /* Required Args */
+    char *filename;
+    int layers;
+};
+
+struct ArgState default_argstate() {
+    struct ArgState as = {
+        .threads = 1,
+        .requests = 500,
+    };
+    return as;
+}
+
+const char *argp_program_version = "SimpleKV 0.1";
+const char *argp_program_bug_address = "<etm2131@columbia.edu>";
+static char doc[] = "SimpleKV Benchmark for Oliver XRP Kernel";
 
 int get_handler(char *db_path, int flag) {
     int fd = open(db_path, flag | O_DIRECT, 0755);
@@ -176,13 +204,14 @@ int load(size_t layer_num, char *db_path) {
     return terminate();
 }
 
-void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path) {
+void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path, int use_xrp) {
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
         args[i].db_handler = get_handler(db_path, O_RDONLY);
         args[i].log_handler = get_log_handler(O_RDONLY);
         args[i].timer = 0;
+        args[i].use_xrp = use_xrp;
     }
 }
 
@@ -199,8 +228,14 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
     }
 }
 
-int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num) {
-    printf("Run the test of %lu requests\n", request_num);
+int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp) {
+    if (!use_xrp) {
+        fprintf(stderr, "Running without XRP is currently unimplemented\n");
+        exit(0);
+    }
+
+    printf("Running benchmark with %ld layers, %ld requests, and %ld thread(s)\n",
+                layer_num, request_num, thread_num);
     int db_fd = initialize(layer_num, RUN_MODE, db_path);
     /* Cache up to 3 layers of the B+tree */
     build_cache(db_fd, layer_num > 3 ? 3 : layer_num);
@@ -210,7 +245,7 @@ int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num) 
     pthread_t tids[worker_num];
     WorkerArg args[worker_num];
 
-    initialize_workers(args, request_num, db_path);
+    initialize_workers(args, request_num, db_path, use_xrp);
 
     clock_gettime(CLOCK_REALTIME, &start);
     start_workers(tids, args);
@@ -316,39 +351,81 @@ ptr__t next_node(key__t key, Node *node) {
     return node->ptr[node->num - 1];
 }
 
-int prompt_help(int argc, char **argv) {
-    /* Load is a misnomer - the --load option actually writes a new database to disk */
-    printf("Usage: %s --load db_path number_of_layers\n", *argv);
-    printf("or     %s --run db_path number_of_layers number_of_requests number_of_threads\n", *argv);
+static int parse_opt(int key, char *arg, struct argp_state *state) {
+    struct ArgState *st = state->input;
+    switch (key) {
+        case 'c':
+            st->create = 1;
+            break;
+        
+        case 'x':
+            st -> xrp = 1;
+            break;
+        
+        case 'r': {
+            char *endptr = NULL;
+            st->requests = strtol(arg, &endptr, 10);
+            if ((endptr != NULL && *endptr != '\0') || st->requests < 0) {
+                argp_failure(state, 1, 0, "invalid number of requests");
+            }
+        }
+
+        case 't': {
+            char *endptr = NULL;
+            st->threads = strtol(arg, &endptr, 10);
+            if ((endptr != NULL && *endptr != '\0') || st->threads < 0) {
+                argp_failure(state, 1, 0, "invalid number of threads");
+            }
+        }
+
+        case ARGP_KEY_ARG:
+        switch (state->arg_num) {
+            case 0:
+                st->filename = arg;
+                break;
+
+            case 1: {
+                char *endptr = NULL;
+                st->layers = strtol(arg, &endptr, 10);
+                if ((endptr != NULL && *endptr != '\0') || st->layers < 0) {
+                    argp_failure(state, 1, 0, "invalid number of layers");
+                }
+                break;
+                }
+            
+            default:
+                argp_failure(state, 1, 0, "too many arguments");
+        }
+        break;
+
+        case ARGP_KEY_END:
+            if (state->arg_num != 2) {
+                argp_error(state, "too few arguments");
+            }
+            if (st->create && st->xrp) {
+                argp_error(state, "incompatible options \"create\" and \"use-xrp\"");
+            }
+    }
     return 0;
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 3) {
-        return prompt_help(argc, argv);
-    }
-    
-    if (strcmp(argv[1], "--load") == 0) {
-        char *db_path = argv[2];
-        size_t n_layers = strtol_or_exit(argv[3], "Invalid number of layers\n");
-        return load(n_layers, db_path);
-    }
-    
-    if (strcmp(argv[1], "--run") == 0) {
-        if (argc < 6) {
-            return prompt_help(argc, argv);
-        }
-        char *db_path = argv[2];
-        size_t layer_num, request_num, thread_num;
-        layer_num = strtol_or_exit(argv[3], "Invalid number of layers\n");
-        request_num = strtol_or_exit(argv[4], "Invalid number of requests\n");
-        thread_num = strtol_or_exit(argv[5], "Invalid number of threads\n");
+    struct argp_option options[] = {
+        { "create", 'c', "N_LAYERS", 0, "Create a new database with n layers" },
+        { "use-xrp", 'x', 0, 0, "Use the (previously) loaded XRP BPF function to query the DB."
+          " Incompatible with --create"
+        },
+        { "requests", 'r', "REQ", 0, "Number of requests to submit per thread" },
+        { "threads" , 't', "N_THREADS", 0, "Number of concurrent threads to run" },
+        { 0 }
+    };
+    struct ArgState arg_state = default_argstate();
+    struct argp argp = { options, parse_opt, "DB_NAME N_LAYERS", doc };
+    argp_parse(&argp, argc, argv, 0, 0, &arg_state);
 
-        printf("Running benchmark with %ld layers, %ld requests, and %ld threads\n",
-                    layer_num, request_num, thread_num);
-
-        return run(db_path, layer_num, request_num, thread_num);
+    if (arg_state.create) {
+        return load(arg_state.layers, arg_state.filename);
     }
-    
-    return prompt_help(argc, argv);
+
+    return run(arg_state.filename, arg_state.layers, arg_state.requests, arg_state.threads, arg_state.xrp);
 }

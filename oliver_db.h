@@ -29,6 +29,7 @@ typedef struct {
     int db_handler;
     size_t timer;
     int log_handler;
+    int use_xrp;
 } WorkerArg;
 
 int get_handler(char *db_path, int flag);
@@ -48,7 +49,7 @@ ptr__t decode(ptr__t ptr) {
 
 int load(size_t layer_num, char *db_path);
 
-int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num);
+int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp);
 
 void *subtask(void *args);
 
@@ -62,11 +63,9 @@ void read_log(ptr__t ptr, Log *log, int db_handler);
 
 int retrieve_value(ptr__t ptr, val__t val, int db_handler);
 
-int prompt_help();
-
 int initialize(size_t layer_num, int mode, char *db_path);
 
-void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path);
+void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path, int use_xrp);
 
 void start_workers(pthread_t *tids, WorkerArg *args);
 

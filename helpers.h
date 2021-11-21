@@ -19,7 +19,7 @@ static inline long strtol_or_exit(char *str, char *fail_msg) {
     char *endptr = NULL;
     errno = 0;
     long result = strtol(str, &endptr, 10);
-    if (endptr == str || errno != 0) {
+    if ((endptr != NULL && *endptr != '\0') || errno != 0) {
         fprintf(stderr, "%s", fail_msg);
         exit(1);
     }
@@ -30,7 +30,7 @@ static inline unsigned long strtoul_or_exit(char *str, char *fail_msg) {
     char *endptr = NULL;
     errno = 0;
     unsigned long result = strtoul(str, &endptr, 10);
-    if (endptr == str || errno != 0) {
+    if ((endptr != NULL && *endptr != '\0') || errno != 0) {
         fprintf(stderr, "%s", fail_msg);
         exit(1);
     }

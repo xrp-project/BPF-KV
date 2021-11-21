@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -pthread -D_GNU_SOURCE
+CFLAGS = -Wall -pthread -D_GNU_SOURCE -g -O0
 LDFLAGS = -pthread
 
 all: sr oliver_db
