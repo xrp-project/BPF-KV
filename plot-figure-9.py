@@ -1,6 +1,7 @@
 import sys
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import MultipleLocator
+from matplotlib.ticker import ScalarFormatter
 
 thread = [i for i in range(1, 13)]
 
@@ -22,14 +23,17 @@ plt.rcParams.update({'font.size': 14})
 plt.figure()
 for i in ['spdk', 'io_uring', 'read', 'xrp']:
     lat_3 = get_data('./data/' + i + '-3.txt', '99%   latency:', 2)
-    lat_6 = get_data('./data/' + i + '-6.txt', '99%   latency:', 2)
     plt.plot(thread, lat_3, label=i, color=c[i], marker=m[i], markersize=14)
+    print(lat_3)
     #plt.plot(thread, lat_6, label=i+' (6 lvls)')
 x_loc = MultipleLocator(1)
 ax = plt.gca()
 ax.xaxis.set_major_locator(x_loc)
 plt.xlim(0.5, 12.5)
+plt.ylim(10, 1500)
 plt.yscale('log')
+ax.yaxis.set_major_formatter(ScalarFormatter())
+ax.yaxis.grid(which='both')
 plt.xlabel('Threads', fontsize=20)
 plt.ylabel('99th Latency (μs)', fontsize=20)
 plt.legend()
@@ -41,7 +45,6 @@ plt.close()
 plt.figure()
 for i in ['spdk', 'xrp', 'read', 'io_uring']:
     thru_3 = get_data('./data/' + i + '-3.txt', 'Average throughput:', 2)
-    print(i, thru_3)
     plt.plot(thread, thru_3, label=i, color=c[i], marker=m[i], markersize=14)
 x_loc = MultipleLocator(1)
 ax = plt.gca()
