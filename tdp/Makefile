@@ -6,8 +6,8 @@ BPF_CFLAGS ?= -I$(LIBBPF_DIR)/build/usr/
 
 all: drop.o drop2.o droptree.o oliver
 
-oliver: oliver_drop2.o oliver_agg.o
-	cp oliver_drop2.o /home/evan/kv-test/
+oliver: oliver_drop2.o oliver_agg.o oliver_gather.o
+	cp oliver_drop2.o oliver_gather.o /home/evan/kv-test/
 
 #all: drop.o drop2.o drop3.o
 #all: oliver_drop2.o

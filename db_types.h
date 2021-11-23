@@ -14,6 +14,7 @@ typedef unsigned long ptr__t;
 #define PTR_SIZE sizeof(ptr__t)
 #define BLK_SIZE 512
 #define BLK_SIZE_LOG 9
+#define SCRATCH_SIZE 4096
 
 // Node-level information
 #define INTERNAL 0
@@ -52,6 +53,26 @@ struct Query {
     Node current_node;
     ptr__t current_parent;
 };
+
+
+#define SG_KEYS 32
+
+struct MaybeValue {
+    char found;
+    val__t value;
+};
+
+struct ScatterGatherQuery {
+    ptr__t root_pointer;
+    ptr__t value_ptr;
+    unsigned int state_flags;
+    int current_index;
+    key__t keys[SG_KEYS];
+    struct MaybeValue values[SG_KEYS];
+};
+
+_Static_assert (sizeof(struct Query) <= SCRATCH_SIZE, "struct Query too large for scratch page");
+_Static_assert (sizeof(struct ScatterGatherQuery) <= SCRATCH_SIZE, "struct ScatterGatherQuery too large for scratch page");
 
 static inline struct Query new_query(long key) {
     struct Query query = {
