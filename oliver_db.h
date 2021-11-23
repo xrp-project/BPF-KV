@@ -55,13 +55,9 @@ void *subtask(void *args);
 
 void build_cache(int db_fd, size_t layer_num);
 
-ptr__t next_node(key__t key, Node *node);
-
 void read_node(ptr__t ptr, Node *node, int db_handler);
 
 void read_log(ptr__t ptr, Log *log, int db_handler);
-
-int retrieve_value(ptr__t ptr, val__t val, int db_handler);
 
 int initialize(size_t layer_num, int mode, char *db_path);
 

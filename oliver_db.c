@@ -17,10 +17,12 @@ struct ArgState {
     /* Flags */
     int create;
     int xrp;
+    int key_set;
 
-    /* Options */
+    /* Option Params */
     int threads;
     int requests;
+    long key;
 
     /* Required Args */
     char *filename;
@@ -37,7 +39,10 @@ struct ArgState default_argstate() {
 
 const char *argp_program_version = "SimpleKV 0.1";
 const char *argp_program_bug_address = "<etm2131@columbia.edu>";
-static char doc[] = "SimpleKV Benchmark for Oliver XRP Kernel";
+static char doc[] =
+        "SimpleKV Benchmark for Oliver XRP Kernel\v"
+        "This utility provides several tools for testing and benchmarking"
+        " SimpleKV 'databases' on XRP enabled kernels.";
 
 int get_handler(char *db_path, int flag) {
     int fd = open(db_path, flag | O_DIRECT, 0755);
@@ -121,24 +126,7 @@ int terminate(void) {
     return 0;
 }
 
-int compare_nodes(Node *x, Node *y) {
-    if (x->num != y->num) {
-        printf("num differs %lu %lu\n", x->num, y->num);
-        return 0;
-    }
-    if (x->type != y->type) {
-        printf("type differs %lu %lu\n", x->type, y->type);
-        return 0;
-    }
-    for (size_t i = 0; i < x->num; i++)
-        if (x->key[i] != y->key[i] || x->ptr[i] != y->ptr[i]) {
-            printf("bucket %lu differs x.key %lu y.key %lu x.ptr %lu y.ptr %lu\n",
-                    i, x->key[i], y->key[i], x->ptr[i], y->ptr[i]);
-            return 0;
-        }
-    return 1;
-}
-
+/* Create a new database on disk at [db_path] with [layer_num] layers */
 int load(size_t layer_num, char *db_path) {
     printf("Load the database of %lu layers\n", layer_num);
     int db = initialize(layer_num, LOAD_MODE, db_path);
@@ -298,57 +286,110 @@ void *subtask(void *args) {
     return NULL;
 }
 
-void print_node(ptr__t ptr, Node *node) {
-    printf("----------------\n");
-    printf("ptr %lu num %lu type %lu\n", ptr, node->num, node->type);
-    for (size_t i = 0; i < NODE_CAPACITY; i++) {
-        printf("(%6lu, %8lu) ", node->key[i], node->ptr[i]);
-    }
-    printf("\n----------------\n");
-}
-
-void print_log(ptr__t ptr, Log *log) {
-    printf("----------------\n");
-    printf("ptr %lu\n", ptr);
-    for (size_t i = 0; i < LOG_CAPACITY; i++) {
-        printf("%s\n", log->val[i]);
-    }
-    printf("\n----------------\n");
-}
-
 void read_node(ptr__t ptr, Node *node, int db_handler) {
     checked_pread(db_handler, node, sizeof(Node), decode(ptr));
 }
 
-/* TODO (etm): Probably want to delete; seems unused */
-void read_log(ptr__t ptr, Log *log, int db_handler) {
-    checked_pread(db_handler, log, sizeof(Log), decode(ptr));
+
+/* Function using the same bit fiddling that we use in the BPF function */
+static void read_value_the_hard_way(int fd, char *retval, ptr__t ptr) {
+    /* Base of the block containing our vale */
+    ptr__t base = decode(ptr) & ~(BLK_SIZE - 1);
+    char buf[BLK_SIZE];
+    checked_pread(fd, buf, BLK_SIZE, (long) base);
+    ptr__t offset = decode(ptr) & (BLK_SIZE - 1);
+    memcpy(retval, buf + offset, sizeof(val__t));
 }
 
-int retrieve_value(ptr__t ptr, val__t val, int db_handler) {
-    Log *log;
-    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
-        perror("posix_memalign failed");
+/**
+ * Traverses the B+ tree index and retrieves the value associated with
+ * [key] from the heap, if [key] is in the database.
+ * @param file_name
+ * @param key
+ * @return null terminated string containing the value on disk, or NULL if key not found
+ */
+static char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
+    char *const retval = malloc(sizeof(val__t) + 1);
+    if (retval == NULL) {
+        perror("malloc");
+        exit(1);
+    }
+    /* Ensure we have a null at the end of the string */
+    retval[sizeof(val__t)] = '\0';
+
+    /* Open the database */
+    // TODO (etm): This is never closed
+    int flags = O_RDONLY;
+    if (use_xrp) {
+    flags = flags | O_DIRECT;
+    }
+    int db_fd = open(file_name, flags);
+    if (db_fd < 0) {
+        perror("failed to open database");
         exit(1);
     }
 
-    ptr__t mask = BLK_SIZE - 1;
-    ptr__t base = ptr & (~mask);
-    ptr__t offset = ptr & mask;
+    if (use_xrp) {
+        struct Query query = new_query(key);
+        long ret = lookup_bpf(db_fd, &query);
 
-    read_log(base, log, db_handler);
-    memcpy(val, log->val[offset / VAL_SIZE], VAL_SIZE);
+        if (ret < 0) {
+            printf("reached leaf? %ld\n", query.state_flags);
+            fprintf(stderr, "read xrp failed with code %d\n", errno);
+            fprintf(stderr, "%s\n", strerror(errno));
+            exit(errno);
+        }
+        if (query.found == 0) {
+            printf("reached leaf? %ld\n", query.state_flags);
+            printf("result not found\n");
+            exit(1);
+        }
+        memcpy(retval, query.value, sizeof(query.value));
+    } else {
+        /* Traverse b+ tree index in db to find value */
+        Node *const node;
+        if (posix_memalign((void **) &node, 512, sizeof(Node))) {
+            perror("posix_memalign failed");
+            exit(1);
+        }
 
-    return 0;
+        checked_pread(db_fd, node, sizeof(Node), 0);
+        ptr__t ptr = nxt_node(key, node);
+        while (node->type != LEAF) {
+            checked_pread(db_fd, node, sizeof(Node), (long) decode(ptr));
+            ptr = nxt_node(key, node);
+        }
+        /* Verify that the key exists in this leaf node, otherwise missing key */
+        if (!key_exists(key, node)) {
+            free(node);
+            free(retval);
+            close(db_fd);
+            return NULL;
+        }
+
+        /* Now we're at a leaf node, and ptr points to the log entry */
+        read_value_the_hard_way(db_fd, retval, ptr);
+        free(node);
+    }
+    close(db_fd);
+    return retval;
 }
 
-ptr__t next_node(key__t key, Node *node) {
-    for (size_t i = 0; i < node->num; i++) {
-        if (key < node->key[i]) {
-            return node->ptr[i - 1];
-        }
+static int lookup_single_key(char *filename, long key, int use_xrp) {
+    /* Lookup Single Key */
+    char *value = grab_value(filename, key, use_xrp);
+    printf("Key: %ld\n", key);
+    if (value == NULL) {
+        printf("Value not found\n");
+        return 1;
     }
-    return node->ptr[node->num - 1];
+    char *nospace = value;
+    while (*nospace != '\0' && isspace((int) *nospace)) {
+        ++nospace;
+    }
+    printf("Value %s\n", nospace);
+    free(value);
+    return 0;
 }
 
 static int parse_opt(int key, char *arg, struct argp_state *state) {
@@ -378,6 +419,15 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             }
         }
 
+        case 'k': {
+            char *endptr = NULL;
+            st->key = strtol(arg, &endptr, 10);
+            st->key_set = 1;
+            if (endptr != NULL && *endptr != '\0') {
+                argp_failure(state, 1, 0, "invalid key");
+            }
+        }
+
         case ARGP_KEY_ARG:
         switch (state->arg_num) {
             case 0:
@@ -402,30 +452,35 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             if (state->arg_num != 2) {
                 argp_error(state, "too few arguments");
             }
-            if (st->create && st->xrp) {
-                argp_error(state, "incompatible options \"create\" and \"use-xrp\"");
-            }
     }
     return 0;
 }
 
 int main(int argc, char *argv[]) {
     struct argp_option options[] = {
-        { "create", 'c', "N_LAYERS", 0, "Create a new database with n layers" },
+        { "create", 'c', "N_LAYERS", 0, "Create a new database with n layers." },
+        { "key", 'k', "KEY", 0, "Single key to retrieve from the database."},
         { "use-xrp", 'x', 0, 0, "Use the (previously) loaded XRP BPF function to query the DB."
-          " Incompatible with --create"
+          " Ignored if --create is specified"
         },
-        { "requests", 'r', "REQ", 0, "Number of requests to submit per thread" },
-        { "threads" , 't', "N_THREADS", 0, "Number of concurrent threads to run" },
+        { "requests", 'r', "REQ", 0, "Number of requests to submit per thread. Ignored if -k is set." },
+        { "threads" , 't', "N_THREADS", 0, "Number of concurrent threads to run. Ignored if -k is set." },
         { 0 }
     };
     struct ArgState arg_state = default_argstate();
     struct argp argp = { options, parse_opt, "DB_NAME N_LAYERS", doc };
     argp_parse(&argp, argc, argv, 0, 0, &arg_state);
 
+    /* Create a new database */
     if (arg_state.create) {
         return load(arg_state.layers, arg_state.filename);
     }
 
+    /* Lookup Single Key */
+    if (arg_state.key_set) {
+        return lookup_single_key(arg_state.filename, arg_state.key, arg_state.xrp);
+    }
+
+    /* Default: Run the SimpleKV benchmark */
     return run(arg_state.filename, arg_state.layers, arg_state.requests, arg_state.threads, arg_state.xrp);
 }

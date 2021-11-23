@@ -37,4 +37,6 @@ static inline unsigned long strtoul_or_exit(char *str, char *fail_msg) {
     return result;
 }
 
+int compare_nodes(Node *x, Node *y);
+
 #endif /* HELPERS_H */

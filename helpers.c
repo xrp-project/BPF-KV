@@ -78,3 +78,22 @@ int key_exists(unsigned long const key, Node const *node) {
     }
     return 0;
 }
+
+int compare_nodes(Node *x, Node *y) {
+    if (x->num != y->num) {
+        printf("num differs %lu %lu\n", x->num, y->num);
+        return 0;
+    }
+    if (x->type != y->type) {
+        printf("type differs %lu %lu\n", x->type, y->type);
+        return 0;
+    }
+    for (size_t i = 0; i < x->num; i++)
+        if (x->key[i] != y->key[i] || x->ptr[i] != y->ptr[i]) {
+            printf("bucket %lu differs x.key %lu y.key %lu x.ptr %lu y.ptr %lu\n",
+                    i, x->key[i], y->key[i], x->ptr[i], y->ptr[i]);
+            return 0;
+        }
+    return 1;
+}
+
