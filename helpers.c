@@ -17,12 +17,18 @@ long lookup_bpf(int db_fd, struct Query *query) {
     memset(buf, 0, 0x1000);
     memset(scratch, 0, 0x1000);
 
-    struct Query *scratch_query = (struct Query *) scratch;
-    scratch_query->key = query->key;
+    struct ScatterGatherQuery *sgq = (struct ScatterGatherQuery *) scratch;
+    sgq->keys[0] = query->key;
+    sgq->n_keys = 1;
 
     /* Syscall to invoke BPF function that we loaded out-of-band previously */
     long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, 0);
-    *query = *scratch_query;
+
+    struct MaybeValue *maybe_v = &sgq->values[0];
+    query->found = maybe_v->found;
+    if (query->found) {
+        memcpy(query->value, maybe_v->value, sizeof(val__t));
+    }
 
     free(buf);
     free(scratch);

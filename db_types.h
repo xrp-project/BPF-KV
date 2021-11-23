@@ -67,9 +67,15 @@ struct ScatterGatherQuery {
     ptr__t value_ptr;
     unsigned int state_flags;
     int current_index;
+    int n_keys;
     key__t keys[SG_KEYS];
     struct MaybeValue values[SG_KEYS];
 };
+
+static inline struct ScatterGatherQuery new_sg_query(void) {
+    struct ScatterGatherQuery sgq = { 0 };
+    return sgq;
+}
 
 _Static_assert (sizeof(struct Query) <= SCRATCH_SIZE, "struct Query too large for scratch page");
 _Static_assert (sizeof(struct ScatterGatherQuery) <= SCRATCH_SIZE, "struct ScatterGatherQuery too large for scratch page");

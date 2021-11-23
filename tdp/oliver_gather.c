@@ -7,17 +7,6 @@
 #include <bpf/bpf_helpers.h>
 #include "simplekvspec.h"
 
-#ifndef memcpy
-#define memcpy(dest, src, n)   __builtin_memcpy((dest), (src), (n))
-#endif
-
-
-#ifdef VERBOSE
-#define dbg_print(...) bpf_printk(__VA_ARGS__)
-#else
-#define dbg_print(...)
-#endif
-
 char LICENSE[] SEC("license") = "GPL";
 
 static __inline int key_exists(unsigned long const key, Node *node) {
@@ -47,40 +36,13 @@ static __inline ptr__t nxt_node(unsigned long key, Node *node) {
     return node->ptr[NODE_CAPACITY - 1];
 }
 
-#ifdef VERBOSE
-static __inline void print_query(struct Query *q) {
-    dbg_print("struct Query {\n");
-
-    dbg_print("\tfound = %ld\n", q->found);
-    dbg_print("\treached_leaf = %ld\n", q->state_flags & REACHED_LEAF);
-    dbg_print("\tkey = %ld\n", q->key);
-    dbg_print("\tvalue = %s\n", q->value);
-    dbg_print("\tvalue_ptr = %ld\n", q->value_ptr);
-
-    dbg_print("}\n");
-}
-
-static __inline void print_node(Node *node) {
-    dbg_print("struct Node {\n");
-
-    dbg_print("\tnum = %ld\n", node->num);
-    dbg_print("\ttype = %ld\n", node->type);
-    dbg_print("\tkey[0] = %ld\n", node->key[0]);
-    dbg_print("\tkey[30] = %ld\n", node->key[NODE_CAPACITY - 1]);
-    dbg_print("\tptr[0] = 0x%lx\n", node->ptr[0]);
-    dbg_print("\tptr[30] = 0x%lx\n", node->ptr[NODE_CAPACITY - 1]);
-
-    dbg_print("}\n");
-}
-#endif
-
 /* State flags */
 #define AT_VALUE 1
 
 static __inline void set_context_next_index(struct bpf_imposter *context, struct ScatterGatherQuery *query) {
     query->current_index += 1;
     query->state_flags = 0;
-    if (query->current_index == SG_KEYS) {
+    if (query->current_index >= query->n_keys || query->current_index >= SG_KEYS) {
         context->done = 1;
         context->next_addr[0] = 0;
         context->size[0] = 0;
@@ -98,6 +60,20 @@ unsigned int oliver_agg_func(struct bpf_imposter *context) {
     struct ScatterGatherQuery *query = (struct ScatterGatherQuery*) context->scratch;
     Node *node = (Node *) context->data;
     int *curr_idx = &query->current_index;
+
+    /* Three cases:
+     *
+     * 1. We've found the log offset in the previous iteration and are
+     *    now reading the value into the query result. If there are more
+     *    keys to process, start again at the node.
+     *
+     * 2. We've found a leaf node and need to a) verify the key exists and 2)
+     *    get the log offset and make one more resubmission to read the value.
+     *    If the keys is missing, but there are more keys to process, start again
+     *    at the root.
+     *
+     * 3. We're in an internal node and need to keep traversing the B+ tree
+     */
 
     /* Case 1: read value into query result */
     dbg_print("simplekv-bpf: entered\n");
