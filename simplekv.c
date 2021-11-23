@@ -10,7 +10,7 @@
 #include <time.h>
 #include <argp.h>
 
-#include "oliver_db.h"
+#include "simplekv.h"
 #include "helpers.h"
 
 struct ArgState {
@@ -42,7 +42,7 @@ const char *argp_program_bug_address = "<etm2131@columbia.edu>";
 static char doc[] =
         "SimpleKV Benchmark for Oliver XRP Kernel\v"
         "This utility provides several tools for testing and benchmarking"
-        " SimpleKV 'databases' on XRP enabled kernels.";
+        " SimpleKV database files on XRP enabled kernels.";
 
 int get_handler(char *db_path, int flag) {
     int fd = open(db_path, flag | O_DIRECT, 0755);
