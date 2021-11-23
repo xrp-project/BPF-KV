@@ -34,34 +34,47 @@ typedef struct _Log {
     val__t val[LOG_CAPACITY];
 } Log;
 
+/* State Flags for BPF Functions */
+#define REACHED_LEAF 1
+
 /* struct used to communicate with BPF function via scratch buffer */
 struct Query {
     /* everything is a long to make debugging in gdb easier */
-    long found;
-    long reached_leaf;
-    long prev_key_zero;
     key__t key;
+    long found;
+    long state_flags;
+
     val__t value;
-    /*
-    union {
-        key__t key;
-        val__t value;
-    };
-    */
+    /* Used to store file offset to the value once we've located it via a leaf node */
     ptr__t value_ptr;
+
+    /* Current node (possibly a leaf being used to process results) and its parent */
+    Node current_node;
+    ptr__t current_parent;
 };
 
 static inline struct Query new_query(long key) {
     struct Query query = {
-        .found = 0,
-        .reached_leaf = 0,
-        .prev_key_zero = 0,
         .key = key,
+        .found = 0,
+        .state_flags = 0,
         .value = { 0 },
-        .value_ptr = 0
+        .value_ptr = 0,
+        .current_node = { 0 },
+        .current_parent = 0
     };
     return query;
 }
+
+/* 
+| LEAF NODE |
+     \    \
+      \    \
+       \    --------------    
+       | HEAP BLOCK|      \
+	                  | HEAP BLOCK | 
+
+*/
 
 #endif /* DB_TYPES_H */
 

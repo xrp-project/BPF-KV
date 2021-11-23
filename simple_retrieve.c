@@ -63,13 +63,13 @@ char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
         long ret = lookup_bpf(db_fd, &query);
 
         if (ret < 0) {
-            printf("reached leaf? %ld\n", query.reached_leaf);
+            printf("reached leaf? %ld\n", query.state_flags);
             fprintf(stderr, "read xrp failed with code %d\n", errno);
             fprintf(stderr, "%s\n", strerror(errno));
             exit(errno);
         }
         if (query.found == 0) {
-            printf("reached leaf? %ld\n", query.reached_leaf);
+            printf("reached leaf? %ld\n", query.state_flags);
             printf("result not found\n");
             exit(1);
         }

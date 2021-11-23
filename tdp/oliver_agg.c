@@ -74,8 +74,8 @@ static __inline void print_node(Node *node) {
 }
 
 
-SEC("oliver_pass")
-unsigned int oliver_pass_func(struct bpf_imposter *context) {
+SEC("oliver_agg")
+unsigned int oliver_agg_func(struct bpf_imposter *context) {
     struct Query *query = (struct Query *) context->scratch;
     Node *node = (Node *) context->data;
 

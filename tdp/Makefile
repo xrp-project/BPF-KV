@@ -4,11 +4,17 @@ CC ?= gcc
 
 BPF_CFLAGS ?= -I$(LIBBPF_DIR)/build/usr/
 
-all: drop.o drop2.o droptree.o oliver_drop2.o
+all: drop.o drop2.o droptree.o oliver
+
+oliver: oliver_drop2.o oliver_agg.o
+	cp oliver_drop2.o /home/evan/kv-test/
+
 #all: drop.o drop2.o drop3.o
 #all: oliver_drop2.o
 
 oliver_drop2.o: oliver_drop2.c simplekvspec.h ../db_types.h
+
+oliver_agg.o: oliver_agg.c simplekvspec.h ../db_types.h
 
 %.o: %.c
 	$(CLANG) -S \
