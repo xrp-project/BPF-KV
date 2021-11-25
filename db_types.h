@@ -16,6 +16,8 @@ typedef unsigned long ptr__t;
 #define BLK_SIZE_LOG 9
 #define SCRATCH_SIZE 4096
 
+#define ROOT_NODE_OFFSET 0
+
 // Node-level information
 #define INTERNAL 0
 #define LEAF 1

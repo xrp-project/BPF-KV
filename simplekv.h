@@ -69,6 +69,8 @@ void terminate_workers(pthread_t *tids, WorkerArg *args);
 
 int terminate(void);
 
+int get_leaf_containing(int database_fd, key__t key, Node *node);
+
 int compare_nodes(Node *x, Node *y);
 
 void print_node(ptr__t ptr, Node *node);

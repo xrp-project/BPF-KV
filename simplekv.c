@@ -11,10 +11,14 @@
 #include "helpers.h"
 
 struct ArgState {
-    /* Flags */
+    /* Separate Commands */
     int create;
-    int xrp;
+    int dump_keys;
     int key_set;
+    int n_commands;
+
+    /* Flags */
+    int xrp;
 
     /* Option Params */
     int threads;
@@ -350,30 +354,16 @@ static char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
         }
         memcpy(retval, query.value, sizeof(query.value));
     } else {
-        /* Traverse b+ tree index in db to find value */
-        Node *const node;
-        if (posix_memalign((void **) &node, 512, sizeof(Node))) {
-            perror("posix_memalign failed");
-            exit(1);
-        }
-
-        checked_pread(db_fd, node, sizeof(Node), 0);
-        ptr__t ptr = nxt_node(key, node);
-        while (node->type != LEAF) {
-            checked_pread(db_fd, node, sizeof(Node), (long) decode(ptr));
-            ptr = nxt_node(key, node);
-        }
-        /* Verify that the key exists in this leaf node, otherwise missing key */
-        if (!key_exists(key, node)) {
-            free(node);
+        /* Traverse b+ tree index in db to find value and verify the key exists in leaf node */
+        Node node = { 0 };
+        if (get_leaf_containing(db_fd, key, &node) != 0 || !key_exists(key, &node)) {
             free(retval);
             close(db_fd);
             return NULL;
         }
 
         /* Now we're at a leaf node, and ptr points to the log entry */
-        read_value_the_hard_way(db_fd, retval, ptr);
-        free(node);
+        read_value_the_hard_way(db_fd, retval, nxt_node(key, &node));
     }
     close(db_fd);
     return retval;
@@ -396,11 +386,84 @@ static int lookup_single_key(char *filename, long key, int use_xrp) {
     return 0;
 }
 
+/**
+ * Get the leaf node that MAY contain [key].
+ *
+ * Note: It is up to the caller to verify that the node actually contains [key].
+ * If it does not, then [key] does not exist in the database.
+ *
+ * @param database_fd - File descriptor for open database file
+ * @param key
+ * @param *node - Pointer to Node that will be populated on success
+ * @return 0 on success (node retrieved), -1 on error
+ */
+int get_leaf_containing(int database_fd, key__t key, Node *node) {
+    Node *const tmp_node;
+    if (posix_memalign((void**) &tmp_node, 512, sizeof(Node))) {
+        return -1;
+    }
+    long bytes_read = pread(database_fd, tmp_node, sizeof(Node), ROOT_NODE_OFFSET);
+    if (bytes_read != sizeof(Node)) {
+        free(tmp_node);
+        return -1;
+    }
+    ptr__t ptr = nxt_node(key, tmp_node);
+    while (tmp_node->type != LEAF) {
+        bytes_read = pread(database_fd, tmp_node, sizeof(Node), (long) decode(ptr));
+        if (bytes_read != sizeof(Node)) {
+            free(tmp_node);
+            return -1;
+        }
+        ptr = nxt_node(key, tmp_node);
+    }
+    *node = *tmp_node;
+    free(tmp_node);
+    return 0;
+}
+
+/* Dumps all keys by scanning across the leaf nodes */
+static int dump_keys(char *filename, int levels) {
+    if (levels < 2) {
+        fprintf(stderr, "Too few levels for dump-keys operation\n");
+        exit(1);
+    }
+
+    int db_fd = open(filename, O_RDONLY);
+    if (db_fd < 0) {
+        perror("failed to open database");
+        exit(1);
+    }
+
+    Node node = { 0 };
+    if (get_leaf_containing(db_fd, 0, &node) != 0) {
+        fprintf(stderr, "Failed dumping keys\n");
+        exit(1);
+    }
+    printf("Dumping keys in B+ tree\n");
+    for (;;) {
+        for (int i = 0; i < NODE_CAPACITY; ++i) {
+            printf("%ld\n", node.key[i]);
+        }
+        if (node.next == 0) {
+            break;
+        }
+        checked_pread(db_fd, &node, sizeof(Node), (long) node.next);
+    }
+    close(db_fd);
+    return 0;
+}
+
 static int parse_opt(int key, char *arg, struct argp_state *state) {
     struct ArgState *st = state->input;
     switch (key) {
         case 'c':
             st->create = 1;
+            st->n_commands += 1;
+            break;
+
+        case 'd':
+            st->dump_keys = 1;
+            st->n_commands += 1;
             break;
         
         case 'x':
@@ -430,6 +493,7 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             if (endptr != NULL && *endptr != '\0') {
                 argp_failure(state, 1, 0, "invalid key");
             }
+            st->n_commands += 1;
         }
 
         case ARGP_KEY_ARG:
@@ -456,6 +520,10 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             if (state->arg_num != 2) {
                 argp_error(state, "too few arguments");
             }
+            if (st->n_commands > 1) {
+                argp_error(state, "too many commands specified");
+            }
+
     }
     return 0;
 }
@@ -463,7 +531,8 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
 int main(int argc, char *argv[]) {
     struct argp_option options[] = {
         { "create", 'c', 0, 0, "Create a new database with n layers." },
-        { "key", 'k', "KEY", 0, "Single key to retrieve from the database."},
+        { "key", 'k', "KEY", 0, "Retrieve a single key from the database."},
+        { "dump-keys", 'd', 0, 0, "Scan leaf nodes and dump keys in order."},
         { "use-xrp", 'x', 0, 0, "Use the (previously) loaded XRP BPF function to query the DB."
           " Ignored if --create is specified"
         },
@@ -483,6 +552,11 @@ int main(int argc, char *argv[]) {
     /* Lookup Single Key */
     if (arg_state.key_set) {
         return lookup_single_key(arg_state.filename, arg_state.key, arg_state.xrp);
+    }
+
+    /* Dump keys from leaf nodes */
+    if (arg_state.dump_keys) {
+        return dump_keys(arg_state.filename, arg_state.layers);
     }
 
     /* Default: Run the SimpleKV benchmark */
