@@ -1,11 +1,11 @@
 *.sw*
 *.txt
+onlyonmachine/
+
+# Binaries
 nndb
 db
-simple_retrieve
-onlyonmachine/
-oliver_db
-
+simplekv
 
 .idea
 .vscode

@@ -2,8 +2,10 @@ CC = gcc
 CFLAGS = -Wall -pthread -D_GNU_SOURCE -g -O0 -Wunused
 LDFLAGS = -pthread
 
+all: skv-test
+
 skv-test: simplekv
-	cp simplekv /home/evan/kv-test
+	cp simplekv ${HOME}/kv-test
 
 db: db.c db.h
 
