@@ -148,12 +148,20 @@ int load(size_t layer_num, char *db_path) {
     the key we need, we read the offset into the heap and can retrieve the value.
     */
     ptr__t next_pos = 1;
+    long next_node_offset = 1;
     for (size_t i = 0; i < layer_num; i++) {
         size_t extent = max_key / layer_cap[i], start_key = 0;
         printf("layer %lu extent %lu\n", i, extent);
-        for (size_t j = 0; j < layer_cap[i]; j++) {
+        for (size_t j = 0; j < layer_cap[i]; ++j, ++next_node_offset) {
             node->type = (i == layer_num - 1) ? LEAF : INTERNAL;
             size_t sub_extent = extent / NODE_CAPACITY;
+            if (j == layer_cap[i] - 1) {
+                /* Last node in this level */
+                node->next = 0;
+            } else {
+                /* Pointer to the next node in this level; used for efficient scans */
+                node->next = next_node_offset * sizeof(Node);
+            }
             for (size_t k = 0; k < NODE_CAPACITY; k++) {
                 node->key[k] = start_key + k * sub_extent;
                 node->ptr[k] = node->type == INTERNAL ? 

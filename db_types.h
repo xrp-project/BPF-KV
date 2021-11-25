@@ -31,6 +31,8 @@ typedef struct _Node {
     ptr__t ptr[NODE_CAPACITY];
 } Node;
 
+_Static_assert(sizeof(Node) == BLK_SIZE, "Nodes must be block sized");
+
 typedef struct _Log {
     val__t val[LOG_CAPACITY];
 } Log;
