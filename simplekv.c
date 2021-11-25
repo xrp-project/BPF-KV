@@ -421,8 +421,20 @@ int get_leaf_containing(int database_fd, key__t key, Node *node) {
     return 0;
 }
 
-/* Dumps all keys by scanning across the leaf nodes */
-static int dump_keys(char *filename, int levels) {
+/* Simple function that prints the key; for use with `iterate_keys` */
+static int iter_print(int idx, Node *node, void *state) {
+    printf("%ld\n", node->key[idx]);
+    return 0;
+}
+
+/* Dumps all keys by scanning across the leaf nodes
+ *
+ * NB: This function is generic, but unfortunately since C doesn't support
+ * real generics it isn't monomorphized. Keep this in mind for benchmarks.
+ * Maybe we should use C++ or inline the [key_iter_action].
+ **/
+int iterate_keys(char *filename, int levels, long start_key, long end_key,
+                        key_iter_action fn, void *fn_state) {
     if (levels < 2) {
         fprintf(stderr, "Too few levels for dump-keys operation\n");
         exit(1);
@@ -435,14 +447,20 @@ static int dump_keys(char *filename, int levels) {
     }
 
     Node node = { 0 };
-    if (get_leaf_containing(db_fd, 0, &node) != 0) {
+    if (get_leaf_containing(db_fd, start_key, &node) != 0) {
         fprintf(stderr, "Failed dumping keys\n");
         exit(1);
     }
     printf("Dumping keys in B+ tree\n");
     for (;;) {
         for (int i = 0; i < NODE_CAPACITY; ++i) {
-            printf("%ld\n", node.key[i]);
+            if (node.key[i] >= end_key) {
+                break;
+            }
+            int status = fn(i, &node, fn_state);
+            if (status != 0) {
+                return status;
+            }
         }
         if (node.next == 0) {
             break;
@@ -556,7 +574,7 @@ int main(int argc, char *argv[]) {
 
     /* Dump keys from leaf nodes */
     if (arg_state.dump_keys) {
-        return dump_keys(arg_state.filename, arg_state.layers);
+        return iterate_keys(arg_state.filename, arg_state.layers, 0, LONG_MAX, iter_print, NULL);
     }
 
     /* Default: Run the SimpleKV benchmark */

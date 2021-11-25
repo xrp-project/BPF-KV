@@ -75,6 +75,11 @@ int compare_nodes(Node *x, Node *y);
 
 void print_node(ptr__t ptr, Node *node);
 
+typedef int(*key_iter_action)(int idx, Node *node, void *state);
+
+int iterate_keys(char *filename, int levels, long start_key, long end_key,
+                 key_iter_action fn, void *fn_state);
+
 void free_globals(void);
 
 #endif /* OLIVER_DB_H */
