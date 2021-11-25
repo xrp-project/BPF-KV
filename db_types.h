@@ -25,7 +25,7 @@ typedef unsigned long ptr__t;
 #define FANOUT NODE_CAPACITY
 
 typedef struct _Node {
-    meta__t num;
+    meta__t next;
     meta__t type;
     key__t key[NODE_CAPACITY];
     ptr__t ptr[NODE_CAPACITY];

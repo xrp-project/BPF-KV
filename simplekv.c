@@ -1,11 +1,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <stdint.h>
 #include <sys/file.h>
 #include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/ioctl.h>
 #include <errno.h>
 #include <time.h>
 #include <argp.h>
@@ -103,7 +100,7 @@ void build_cache(int db_fd, size_t layer_num) {
     read_node(encode(0), &cache[head], db_fd);
 
     while (tail < entry_num) {
-        for (size_t i = 0; i < cache[head].num; i++) {
+        for (size_t i = 0; i < NODE_CAPACITY; i++) {
             read_node(cache[head].ptr[i], &cache[tail], db_fd);
             cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
             tail++;
@@ -155,10 +152,9 @@ int load(size_t layer_num, char *db_path) {
         size_t extent = max_key / layer_cap[i], start_key = 0;
         printf("layer %lu extent %lu\n", i, extent);
         for (size_t j = 0; j < layer_cap[i]; j++) {
-            node->num = NODE_CAPACITY;
             node->type = (i == layer_num - 1) ? LEAF : INTERNAL;
-            size_t sub_extent = extent / node->num;
-            for (size_t k = 0; k < node->num; k++) {
+            size_t sub_extent = extent / NODE_CAPACITY;
+            for (size_t k = 0; k < NODE_CAPACITY; k++) {
                 node->key[k] = start_key + k * sub_extent;
                 node->ptr[k] = node->type == INTERNAL ? 
                               encode(next_pos   * BLK_SIZE) :
@@ -458,7 +454,7 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
 
 int main(int argc, char *argv[]) {
     struct argp_option options[] = {
-        { "create", 'c', "N_LAYERS", 0, "Create a new database with n layers." },
+        { "create", 'c', 0, 0, "Create a new database with n layers." },
         { "key", 'k', "KEY", 0, "Single key to retrieve from the database."},
         { "use-xrp", 'x', 0, 0, "Use the (previously) loaded XRP BPF function to query the DB."
           " Ignored if --create is specified"

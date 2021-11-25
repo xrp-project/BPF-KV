@@ -55,13 +55,13 @@ void checked_pread(int fd, void *buf, size_t size, long offset) {
  * @return B+ tree encoded byte offset into the db file
  */
 ptr__t nxt_node(unsigned long key, Node *node) {
-    for (size_t i = 1; i < node->num; ++i) {
+    for (size_t i = 1; i < NODE_CAPACITY; ++i) {
         if (key < node->key[i]) {
             return node->ptr[i - 1];
         }
     }
     /* Key wasn't smaller than any of node->key[x], so take the last ptr */
-    return node->ptr[node->num - 1];
+    return node->ptr[NODE_CAPACITY - 1];
 }
 
 /**
@@ -71,7 +71,7 @@ ptr__t nxt_node(unsigned long key, Node *node) {
  * @return 1 if [key] exists, else 0
  */
 int key_exists(unsigned long const key, Node const *node) {
-    for (int i = 0; i < node->num; ++i) {
+    for (int i = 0; i < NODE_CAPACITY; ++i) {
         if (node->key[i] == key) {
             return 1;
         }
@@ -80,15 +80,11 @@ int key_exists(unsigned long const key, Node const *node) {
 }
 
 int compare_nodes(Node *x, Node *y) {
-    if (x->num != y->num) {
-        printf("num differs %lu %lu\n", x->num, y->num);
-        return 0;
-    }
     if (x->type != y->type) {
         printf("type differs %lu %lu\n", x->type, y->type);
         return 0;
     }
-    for (size_t i = 0; i < x->num; i++)
+    for (size_t i = 0; i < NODE_CAPACITY; i++)
         if (x->key[i] != y->key[i] || x->ptr[i] != y->ptr[i]) {
             printf("bucket %lu differs x.key %lu y.key %lu x.ptr %lu y.ptr %lu\n",
                     i, x->key[i], y->key[i], x->ptr[i], y->ptr[i]);
