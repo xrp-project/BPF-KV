@@ -81,8 +81,90 @@ static inline struct ScatterGatherQuery new_sg_query(void) {
     return sgq;
 }
 
+#define RNG_KEYS 32
+#define RNG_BEGIN_EXCLUSIVE 1ul
+#define RNG_END_INCLUSIVE 1ul << 1
+#define RNG_RESUME 1ul << 2
+
+struct KeyValue {
+    key__t key;
+    val__t value;
+};
+
+/**
+ * By default range queries are inclusive of [range_begin] and exclusive of [range_end].
+ *
+ * This can be controlled by setting the [BEGIN_EXCLUSIVE] and [END_INCLUSIVE] flags.
+ */
+struct RangeQuery {
+    key__t range_begin;
+    key__t range_end;
+    unsigned long flags;
+
+    /* Number of populated values */
+    int len;
+    struct KeyValue kv[RNG_KEYS];
+
+    /* Internal data: Pointer to leaf node used by the BPF to resume the query */
+    ptr__t _resume_from_leaf;
+};
+
+static inline int empty_range(struct RangeQuery const *query) {
+    if (query->range_begin > query->range_end) {
+        return 1;
+    }
+
+    unsigned long begin_exclusive = query->flags & RNG_BEGIN_EXCLUSIVE;
+    unsigned long end_inclusive = query->flags & RNG_END_INCLUSIVE;
+
+    int equal = query->range_begin == query->range_end;
+    if (equal && (begin_exclusive || !end_inclusive)) {
+        return 1;
+    }
+
+    int diff_one = query->range_begin + 1 == query->range_end;
+    if (diff_one && (begin_exclusive && !end_inclusive)) {
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * Prepare the RangeQuery for resubmission / resumption in the kernel.
+ * @param query
+ * @return 0 if query is ready to resume, 1 if complete / empty range
+ */
+static inline int prep_range_resume(struct RangeQuery *query) {
+    query->len = 0;
+    query->flags |= RNG_RESUME;
+    /* Check if there are no more keys to retrieve */
+    return empty_range(query);
+}
+
+/* Mark a range query complete; `empty_range` will return true after marking the query with this function */
+static inline void mark_range_query_complete(struct RangeQuery *query) {
+    query->range_begin = query->range_end;
+    query->flags |= RNG_BEGIN_EXCLUSIVE;
+    query->flags &= ~RNG_END_INCLUSIVE;
+}
+
+/**
+ * Set a new range for the query and "clear" existing data by setting len to 0.
+ * @param query
+ * @param begin
+ * @param end
+ * @param flags
+ */
+static inline void set_range(struct RangeQuery *query, key__t begin, key__t end, long flags) {
+    query->range_begin = begin;
+    query->range_end = end;
+    query->flags = flags;
+    query->len = 0;
+}
+
 _Static_assert (sizeof(struct Query) <= SCRATCH_SIZE, "struct Query too large for scratch page");
 _Static_assert (sizeof(struct ScatterGatherQuery) <= SCRATCH_SIZE, "struct ScatterGatherQuery too large for scratch page");
+_Static_assert (sizeof(struct RangeQuery) <= SCRATCH_SIZE, "struct RangeQuery too large for scratch page");
 
 static inline struct Query new_query(long key) {
     struct Query query = {
@@ -96,16 +178,6 @@ static inline struct Query new_query(long key) {
     };
     return query;
 }
-
-/* 
-| LEAF NODE |
-     \    \
-      \    \
-       \    --------------    
-       | HEAP BLOCK|      \
-	                  | HEAP BLOCK | 
-
-*/
 
 #endif /* DB_TYPES_H */
 

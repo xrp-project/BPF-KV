@@ -15,6 +15,7 @@ struct ArgState {
     int create;
     int dump_keys;
     int key_set;
+    int range_set;
     int n_commands;
 
     /* Flags */
@@ -24,6 +25,8 @@ struct ArgState {
     int threads;
     int requests;
     long key;
+    long range_begin;
+    long range_end;
 
     /* Required Args */
     char *filename;
@@ -471,6 +474,119 @@ int iterate_keys(char *filename, int levels, long start_key, long end_key,
     return 0;
 }
 
+int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
+    if (use_xrp) {
+        fprintf(stderr, "XRP is currently unimplemented for range queries\n");
+        exit(1);
+    }
+
+    /* User space code path */
+    Node node = { 0 };
+    if (query->flags & RNG_RESUME) {
+        checked_pread(db_fd, (void *) &node, sizeof(node), (long) query->_resume_from_leaf);
+    } else if (get_leaf_containing(db_fd, query->range_begin, &node) != 0) {
+        fprintf(stderr, "Failed getting leaf node for key %ld\n", query->range_begin);
+        return 1;
+    }
+
+    key__t first_key = query->flags & RNG_BEGIN_EXCLUSIVE ? query->range_begin + 1 : query->range_begin;
+    unsigned long end_inclusive = query->flags & RNG_END_INCLUSIVE;
+    for(;;) {
+        /* Iterate over keys in leaf node */
+        int i = 0;
+        for (; i < NODE_CAPACITY && query->len < RNG_KEYS; ++i) {
+            if (node.key[i] > query->range_end || (node.key[i] == query->range_end && !end_inclusive)) {
+                /* All done; set state and return 0 */
+                mark_range_query_complete(query);
+                return 0;
+            }
+            /* Retrieve value for this key */
+            if (node.key[i] >= first_key) {
+                /*
+                 * TODO (etm): We perform one read for each value since our hypothetical assumption is
+                 *   that the values are stored in a random heap and not in sorted order (which they actually are).
+                 *   We should confirm that this is the correct assumption to make and also keep in mind that
+                 *   from user space there reads will be cached in the BIO layer unless we do direct IO using
+                 *   IO_URING or another facility.
+                 *
+                 *   This should be discussed before we run performance benchmarks.
+                 */
+
+                char buf[BLK_SIZE] = { 0 };
+                checked_pread(db_fd, buf, sizeof(buf), (long) decode(node.ptr[i]));
+                memcpy(query->kv[query->len].value, buf, sizeof(val__t));
+                query->kv[query->len].key = node.key[i];
+                query->len += 1;
+            }
+        }
+
+        /* Three conditions: Either the query buff is full, or we inspected all keys, or both */
+
+        /* Check end condition of outer loop */
+        if (query->len == RNG_KEYS) {
+            /* Query buffer is full; need to suspend and return */
+            query->range_begin = query->kv[query->len - 1].key;
+            query->flags |= RNG_BEGIN_EXCLUSIVE;
+            if (i < NODE_CAPACITY) {
+                /* This node still has values we should inspect */
+                return 0;
+            }
+
+            /* Need to look at next node */
+            if (node.next == 0) {
+                /* No next node, so we're done */
+                mark_range_query_complete(query);
+            } else {
+                query->_resume_from_leaf = node.next;
+            }
+            return 0;
+        } else if (node.next == 0) {
+            /* Still have room in query buf, but we've read the entire index */
+            mark_range_query_complete(query);
+            return 0;
+        }
+
+        /*
+         * Query buff isn't full, so we inspected all keys in this node
+         * and need to get the next node.
+         */
+        query->_resume_from_leaf = node.next;
+        checked_pread(db_fd, (void *) &node, sizeof(Node), (long) node.next);
+    }
+}
+
+/**
+ * Parse a string specifying a half-open range
+ *
+ * Example strings:
+ *     10,20
+ *     5,8
+ *     0,100
+ *
+ * @param state
+ * @param st
+ * @param range_str
+ */
+static void parse_range(struct argp_state *state, struct ArgState *st, char *range_str) {
+    /* Parse range query params */
+    char *comma = strchr(range_str, ',');
+    if (comma == NULL) {
+        argp_failure(state, 1, 0, "Invalid range specified");
+    }
+    *comma = '\0';
+
+    char *endptr = NULL;
+    st->range_begin = strtol(range_str, &endptr, 10);
+    if ((endptr != NULL && *endptr != '\0')) {
+        argp_failure(state, 1, 0, "Invalid range specified");
+    }
+    endptr = NULL;
+    st->range_end = strtol(comma + 1, &endptr, 10);
+    if ((endptr != NULL && *endptr != '\0')) {
+        argp_failure(state, 1, 0, "Invalid range specified");
+    }
+}
+
 static int parse_opt(int key, char *arg, struct argp_state *state) {
     struct ArgState *st = state->input;
     switch (key) {
@@ -514,6 +630,12 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             st->n_commands += 1;
         }
 
+        case 'g': {
+            parse_range(state, st, arg);
+            st->range_set = 1;
+            st->n_commands += 1;
+        }
+
         case ARGP_KEY_ARG:
         switch (state->arg_num) {
             case 0:
@@ -522,7 +644,7 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
 
             case 1: {
                 char *endptr = NULL;
-                st->layers = strtol(arg, &endptr, 10);
+                st->layers = (int) strtol(arg, &endptr, 10);
                 if ((endptr != NULL && *endptr != '\0') || st->layers < 0) {
                     argp_failure(state, 1, 0, "invalid number of layers");
                 }
@@ -549,8 +671,9 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
 int main(int argc, char *argv[]) {
     struct argp_option options[] = {
         { "create", 'c', 0, 0, "Create a new database with n layers." },
-        { "key", 'k', "KEY", 0, "Retrieve a single key from the database."},
-        { "dump-keys", 'd', 0, 0, "Scan leaf nodes and dump keys in order."},
+        { "key", 'k', "KEY", 0, "Retrieve a single key from the database." },
+        { "dump-keys", 'd', 0, 0, "Scan leaf nodes and dump keys in order." },
+        { "range-query", 'g', "begin,end", 0, "Lookup values with keys in range [begin, end)" },
         { "use-xrp", 'x', 0, 0, "Use the (previously) loaded XRP BPF function to query the DB."
           " Ignored if --create is specified"
         },
@@ -575,6 +698,31 @@ int main(int argc, char *argv[]) {
     /* Dump keys from leaf nodes */
     if (arg_state.dump_keys) {
         return iterate_keys(arg_state.filename, arg_state.layers, 0, LONG_MAX, iter_print, NULL);
+    }
+
+    /* Range query */
+    if (arg_state.range_set) {
+        struct RangeQuery query = { 0 };
+        set_range(&query, arg_state.range_begin, arg_state.range_end, 0);
+        int db_fd = get_handler(arg_state.filename, O_RDONLY);
+        for (;;) {
+            submit_range_query(&query, db_fd, arg_state.xrp);
+            for (int i = 0; i < query.len; ++i) {
+                char buf[sizeof(val__t) + 1] = { 0 };
+                buf[sizeof(val__t)] = '\0';
+                memcpy(buf, query.kv[i].value, sizeof(val__t));
+                char *trimmed = buf;
+                while (isspace(*trimmed)) {
+                    ++trimmed;
+                }
+                printf("%s\n", trimmed);
+            }
+            if (prep_range_resume(&query)) {
+                break;
+            }
+        }
+        close(db_fd);
+        return 0;
     }
 
     /* Default: Run the SimpleKV benchmark */

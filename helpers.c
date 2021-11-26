@@ -25,7 +25,7 @@ long lookup_bpf(int db_fd, struct Query *query) {
     long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, 0);
 
     struct MaybeValue *maybe_v = &sgq->values[0];
-    query->found = maybe_v->found;
+    query->found = (long) maybe_v->found;
     if (query->found) {
         memcpy(query->value, maybe_v->value, sizeof(val__t));
     }
@@ -92,4 +92,3 @@ int compare_nodes(Node *x, Node *y) {
         }
     return 1;
 }
-

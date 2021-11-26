@@ -82,4 +82,6 @@ int iterate_keys(char *filename, int levels, long start_key, long end_key,
 
 void free_globals(void);
 
+int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp);
+
 #endif /* OLIVER_DB_H */
