@@ -8,12 +8,11 @@
 
 #include "helpers.h"
 
-#define SYS_IMPOSTER_PREAD64 445
 
 long lookup_bpf(int db_fd, struct Query *query) {
     /* Set up buffers and query */
     char *buf = aligned_alloc(0x1000, 0x1000);
-    char *scratch = aligned_alloc(0x1000, 0x1000);
+    char *scratch = aligned_alloc(0x1000, SCRATCH_SIZE);
     memset(buf, 0, 0x1000);
     memset(scratch, 0, 0x1000);
 

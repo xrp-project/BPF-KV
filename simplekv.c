@@ -404,7 +404,7 @@ static int lookup_single_key(char *filename, long key, int use_xrp) {
  * @param *node - Pointer to Node that will be populated on success
  * @return 0 on success (node retrieved), -1 on error
  */
-int get_leaf_containing(int database_fd, key__t key, Node *node) {
+int _get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t *node_offset) {
     Node *const tmp_node;
     if (posix_memalign((void**) &tmp_node, 512, sizeof(Node))) {
         return -1;
@@ -421,11 +421,17 @@ int get_leaf_containing(int database_fd, key__t key, Node *node) {
             free(tmp_node);
             return -1;
         }
+        *node_offset = ptr;
         ptr = nxt_node(key, tmp_node);
     }
     *node = *tmp_node;
     free(tmp_node);
     return 0;
+}
+
+int get_leaf_containing(int database_fd, key__t key, Node *node) {
+    ptr__t x = 0;
+    return _get_leaf_containing(database_fd, key, node, &x);
 }
 
 /* Simple function that prints the key; for use with `iterate_keys` */
@@ -480,17 +486,26 @@ int iterate_keys(char *filename, int levels, long start_key, long end_key,
 
 int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
     if (use_xrp) {
-        fprintf(stderr, "XRP is currently unimplemented for range queries\n");
-        exit(1);
+        char *buf = aligned_alloc(0x1000, 0x1000);
+        char *scratch = aligned_alloc(0x1000, SCRATCH_SIZE);
+        memset(buf, 0, 0x1000);
+        memset(scratch, 0, 0x1000);
+
+        *(struct RangeQuery *) scratch = *query;
+        return syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, 0);
     }
 
     /* User space code path */
     Node node = { 0 };
-    if (query->flags & RNG_RESUME) {
+    if (query->_state == RNG_RESUME) {
         checked_pread(db_fd, (void *) &node, sizeof(node), (long) query->_resume_from_leaf);
-    } else if (get_leaf_containing(db_fd, query->range_begin, &node) != 0) {
-        fprintf(stderr, "Failed getting leaf node for key %ld\n", query->range_begin);
-        return 1;
+    } else {
+        ptr__t node_offset = 0;
+        if (_get_leaf_containing(db_fd, query->range_begin, &node, &node_offset) != 0) {
+            fprintf(stderr, "Failed getting leaf node for key %ld\n", query->range_begin);
+            return 1;
+        }
+        query->_resume_from_leaf = node_offset;
     }
 
     key__t first_key = query->flags & RNG_BEGIN_EXCLUSIVE ? query->range_begin + 1 : query->range_begin;
@@ -516,9 +531,7 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
                  *   This should be discussed before we run performance benchmarks.
                  */
 
-                char buf[BLK_SIZE] = { 0 };
-                checked_pread(db_fd, &buf, sizeof(val__t), (long) decode(node.ptr[i]));
-                memcpy(query->kv[query->len].value, buf, sizeof(val__t));
+                checked_pread(db_fd, query->kv[query->len].value, sizeof(val__t), (long) decode(node.ptr[i]));
                 query->kv[query->len].key = node.key[i];
                 query->len += 1;
             }

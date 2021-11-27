@@ -7,6 +7,8 @@
 
 #include "db_types.h"
 
+#define SYS_IMPOSTER_PREAD64 445
+
 long lookup_bpf(int db_fd, struct Query *query);
 
 void checked_pread(int fd, void *buf, size_t size, long offset);

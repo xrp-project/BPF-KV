@@ -26,6 +26,14 @@ typedef unsigned long ptr__t;
 #define LOG_CAPACITY  ((BLK_SIZE) / (VAL_SIZE))
 #define FANOUT NODE_CAPACITY
 
+static inline ptr__t value_base(ptr__t ptr) {
+    return ptr & ~(BLK_SIZE - 1);
+}
+
+static inline ptr__t value_offset(ptr__t ptr) {
+    return ptr & (BLK_SIZE - 1);
+}
+
 typedef struct _Node {
     meta__t next;
     meta__t type;
@@ -82,9 +90,14 @@ static inline struct ScatterGatherQuery new_sg_query(void) {
 }
 
 #define RNG_KEYS 32
-#define RNG_BEGIN_EXCLUSIVE 1ul
-#define RNG_END_INCLUSIVE 1ul << 1
-#define RNG_RESUME 1ul << 2
+#define RNG_BEGIN_EXCLUSIVE 1u
+#define RNG_END_INCLUSIVE 1u << 1
+
+
+/* State flags for internal use */
+#define RNG_RESUME 1u << 2
+#define RNG_TRAVERSE 1u << 3
+#define RNG_READ_VALUE 1u << 4
 
 struct KeyValue {
     key__t key;
@@ -99,14 +112,17 @@ struct KeyValue {
 struct RangeQuery {
     key__t range_begin;
     key__t range_end;
-    unsigned long flags;
+    unsigned int flags;
 
     /* Number of populated values */
     int len;
     struct KeyValue kv[RNG_KEYS];
 
     /* Internal data: Pointer to leaf node used by the BPF to resume the query */
+    unsigned int _state;
     ptr__t _resume_from_leaf;
+    int _node_key_ix;
+    Node _current_node;
 };
 
 static inline int empty_range(struct RangeQuery const *query) {
@@ -114,8 +130,8 @@ static inline int empty_range(struct RangeQuery const *query) {
         return 1;
     }
 
-    unsigned long begin_exclusive = query->flags & RNG_BEGIN_EXCLUSIVE;
-    unsigned long end_inclusive = query->flags & RNG_END_INCLUSIVE;
+    unsigned int begin_exclusive = query->flags & RNG_BEGIN_EXCLUSIVE;
+    unsigned int end_inclusive = query->flags & RNG_END_INCLUSIVE;
 
     int equal = query->range_begin == query->range_end;
     if (equal && (begin_exclusive || !end_inclusive)) {

@@ -6,8 +6,8 @@ BPF_CFLAGS ?= -I$(LIBBPF_DIR)/build/usr/
 
 all: drop.o drop2.o droptree.o oliver
 
-oliver: oliver_drop2.o oliver_gather.o
-	cp oliver_drop2.o oliver_gather.o ${HOME}/kv-test/
+oliver: oliver_drop2.o oliver_gather.o oliver_range.o
+	cp oliver_drop2.o oliver_gather.o oliver_range.o ${HOME}/kv-test/
 
 #all: drop.o drop2.o drop3.o
 #all: oliver_drop2.o
@@ -15,6 +15,8 @@ oliver: oliver_drop2.o oliver_gather.o
 oliver_drop2.o: oliver_drop2.c simplekvspec.h ../db_types.h
 
 oliver_gather.o: oliver_gather.c simplekvspec.h ../db_types.h
+
+oliver_range.o: oliver_range.c simplekvspec.h ../db_types.h
 
 %.o: %.c
 	$(CLANG) -S \
