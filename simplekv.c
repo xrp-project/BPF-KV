@@ -517,7 +517,7 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
                  */
 
                 char buf[BLK_SIZE] = { 0 };
-                checked_pread(db_fd, buf, sizeof(buf), (long) decode(node.ptr[i]));
+                checked_pread(db_fd, &buf, sizeof(val__t), (long) decode(node.ptr[i]));
                 memcpy(query->kv[query->len].value, buf, sizeof(val__t));
                 query->kv[query->len].key = node.key[i];
                 query->len += 1;
@@ -717,7 +717,11 @@ int main(int argc, char *argv[]) {
     if (arg_state.range_set) {
         struct RangeQuery query = { 0 };
         set_range(&query, arg_state.range_begin, arg_state.range_end, 0);
-        int db_fd = get_handler(arg_state.filename, O_RDONLY);
+        int db_fd = open(arg_state.filename, O_RDONLY);
+        if (db_fd < 0) {
+            perror("Failed to open db:");
+            exit(1);
+        }
         for (;;) {
             submit_range_query(&query, db_fd, arg_state.xrp);
             for (int i = 0; i < query.len; ++i) {
