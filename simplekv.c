@@ -44,9 +44,13 @@ struct ArgState default_argstate() {
 const char *argp_program_version = "SimpleKV 0.1";
 const char *argp_program_bug_address = "<etm2131@columbia.edu>";
 static char doc[] =
-        "SimpleKV Benchmark for Oliver XRP Kernel\v"
-        "This utility provides several tools for testing and benchmarking"
-        " SimpleKV database files on XRP enabled kernels.";
+"SimpleKV Benchmark for Oliver XRP Kernel\v\
+This utility provides several tools for testing and benchmarking \
+SimpleKV database files on XRP enabled kernels. \
+\n\nIf you are using XRP eBPF functions it is your responsibility to ensure \
+the correct function is loaded before executing your query with SimpleKV. \
+SimpleKV currently DOES NOT verify that the correct eBPF is loaded.";
+
 
 int get_handler(char *db_path, int flag) {
     int fd = open(db_path, flag | O_DIRECT, 0755);
