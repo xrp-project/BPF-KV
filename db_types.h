@@ -95,9 +95,10 @@ static inline struct ScatterGatherQuery new_sg_query(void) {
 
 
 /* State flags for internal use */
-#define RNG_RESUME 1u << 2
-#define RNG_TRAVERSE 1u << 3
-#define RNG_READ_VALUE 1u << 4
+#define RNG_RESUME 1
+#define RNG_TRAVERSE 2
+#define RNG_READ_VALUE 3
+#define RNG_READ_NODE 4
 
 struct KeyValue {
     key__t key;
@@ -176,6 +177,8 @@ static inline void set_range(struct RangeQuery *query, key__t begin, key__t end,
     query->range_end = end;
     query->flags = flags;
     query->len = 0;
+    query->_state = RNG_TRAVERSE;
+    query->_resume_from_leaf = ROOT_NODE_OFFSET;
 }
 
 _Static_assert (sizeof(struct Query) <= SCRATCH_SIZE, "struct Query too large for scratch page");

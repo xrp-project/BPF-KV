@@ -491,8 +491,11 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
         memset(buf, 0, 0x1000);
         memset(scratch, 0, 0x1000);
 
-        *(struct RangeQuery *) scratch = *query;
-        return syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, 0);
+        struct RangeQuery *scratch_query = (struct RangeQuery*) scratch;
+        *scratch_query = *query;
+        long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, query->_resume_from_leaf);
+        *query = *scratch_query;
+        return ret;
     }
 
     /* User space code path */
@@ -730,13 +733,26 @@ int main(int argc, char *argv[]) {
     if (arg_state.range_set) {
         struct RangeQuery query = { 0 };
         set_range(&query, arg_state.range_begin, arg_state.range_end, 0);
-        int db_fd = open(arg_state.filename, O_RDONLY);
-        if (db_fd < 0) {
-            perror("Failed to open db:");
-            exit(1);
+
+        /* Open the database */
+        int db_fd;
+        if (arg_state.xrp) {
+            db_fd = get_handler(arg_state.filename, O_RDONLY);
+        } else {
+            db_fd = open(arg_state.filename, O_RDONLY);
+            if (db_fd < 0) {
+                perror("Failed to open db:");
+                exit(1);
+            }
         }
+
+        /* Retrieve values in range and print */
         for (;;) {
             submit_range_query(&query, db_fd, arg_state.xrp);
+            // if (submit_range_query(&query, db_fd, arg_state.xrp)) {
+            //     fprintf(stderr, "Range query failed\n");
+            //     exit(1);
+            // }
             for (int i = 0; i < query.len; ++i) {
                 char buf[sizeof(val__t) + 1] = { 0 };
                 buf[sizeof(val__t)] = '\0';

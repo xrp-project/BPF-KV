@@ -13,7 +13,7 @@ nndb: nndb.c nndb.h
 
 nnndb: nnndb.c nnndb.h
 
-simplekv: simplekv.c helpers.c simplekv.h helpers.h 
+simplekv: simplekv.c helpers.c simplekv.h helpers.h db_types.h
 
 .PHONY: clean
 clean:

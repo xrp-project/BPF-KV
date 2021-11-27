@@ -8,13 +8,12 @@
 #include "simplekvspec.h"
 
 /* Mask to prevent out of bounds memory access */
-#define KEY_MASK RNG_KEYS - 1
+#define KEY_MASK (RNG_KEYS - 1)
 
 char LICENSE[] SEC("license") = "GPL";
 
 static __inline ptr__t nxt_node(unsigned long key, Node *node) {
     /* Safety: NULL is never passed for node, but mr. verifier doesn't know that */
-    dbg_print("simplekv-bpf: nxt_node entered\n");
     if (node == NULL)
         return -1;
     for (int i = 1; i < NODE_CAPACITY; ++i) {
@@ -28,15 +27,16 @@ static __inline ptr__t nxt_node(unsigned long key, Node *node) {
 
 static __inline unsigned int process_leaf(struct bpf_imposter *context, struct RangeQuery *query, Node *node) {
     key__t first_key = query->flags & RNG_BEGIN_EXCLUSIVE ? query->range_begin + 1 : query->range_begin;
-    unsigned int end_inclusive = query->flags & RNG_END_INCLUSIVE;
+    // unsigned int end_inclusive = query->flags & RNG_END_INCLUSIVE;
     
     /* Iterate over keys in leaf node */
     int *i = &query->_node_key_ix;
     for(;;) {
         /* Iterate over keys in leaf node */
         for (; *i < NODE_CAPACITY && query->len < RNG_KEYS; ++(*i)) {
-            if (node->key[*i & KEY_MASK] > query->range_end ||
-                    (node->key[*i & KEY_MASK] == query->range_end && end_inclusive == 0)) {
+            if (node->key[*i & KEY_MASK] > query->range_end) {
+                /* TODO (etm): We should be checking for end_inclusive, but the eBPF verifier gets mad if we do... */
+                    // || (node->key[*i & KEY_MASK] == query->range_end && end_inclusive == 0)) {
                 /* All done; set state and return 0 */
                 mark_range_query_complete(query);
                 context->done = 1;
@@ -45,9 +45,10 @@ static __inline unsigned int process_leaf(struct bpf_imposter *context, struct R
             /* Retrieve value for this key */
             if (node->key[*i & KEY_MASK] >= first_key) {
                 /* Set up the next resubmit to read the value */
-                query->_state = RNG_READ_VALUE;
-                context->next_addr[0] = decode(value_base(node->ptr[*i & KEY_MASK]));
+                context->next_addr[0] = value_base(decode(node->ptr[*i & KEY_MASK]));
                 context->size[0] = BLK_SIZE;
+                query->kv[query->len & KEY_MASK].key = node->key[*i & KEY_MASK];
+                query->_state = RNG_READ_VALUE;
                 return 0;
             }
         }
@@ -72,11 +73,14 @@ static __inline unsigned int process_leaf(struct bpf_imposter *context, struct R
             } else {
                 query->_resume_from_leaf = node->next;
                 query->_node_key_ix = 0;
+                query->_state = RNG_READ_NODE;
             }
+            /* Return to user since we marked context->done = 1 at the top of this if block */
             return 0;
         } else if (node->next == 0) {
             /* Still have room in query buf, but we've read the entire index */
             mark_range_query_complete(query);
+            context->done = 1;
             return 0;
         }
 
@@ -85,6 +89,7 @@ static __inline unsigned int process_leaf(struct bpf_imposter *context, struct R
          * and need to get the next node.
          */
         query->_resume_from_leaf = node->next;
+        query->_state = RNG_READ_NODE;
         query->_node_key_ix = 0;
         context->next_addr[0] = node->next;
         context->size[0] = BLK_SIZE;
@@ -94,7 +99,7 @@ static __inline unsigned int process_leaf(struct bpf_imposter *context, struct R
 
 static __inline unsigned int process_value(struct bpf_imposter *context, struct RangeQuery *query) {
     int *i = &query->_node_key_ix;
-    unsigned long offset = value_offset(query->_current_node.ptr[*i & KEY_MASK]);
+    unsigned long offset = value_offset(decode(query->_current_node.ptr[*i & KEY_MASK]));
     memcpy(query->kv[query->len & KEY_MASK].value, context->data + offset, sizeof(val__t));
     query->len += 1;
     *i += 1;
@@ -104,6 +109,7 @@ static __inline unsigned int process_value(struct bpf_imposter *context, struct 
 
 static __inline unsigned int traverse_index(struct bpf_imposter *context, struct RangeQuery *query, Node *node) {
     if (node->type == LEAF) {
+        query->_current_node = *node;
         return process_leaf(context, query, node);
     }
 
@@ -113,19 +119,24 @@ static __inline unsigned int traverse_index(struct bpf_imposter *context, struct
     return 0;
 }
 
-SEC("oliver_agg")
-unsigned int oliver_agg_func(struct bpf_imposter *context) {
+SEC("oliver_range")
+unsigned int oliver_range_func(struct bpf_imposter *context) {
     struct RangeQuery *query = (struct RangeQuery*) context->scratch;
     Node *node = (Node *) context->data;
 
     switch (query->_state) {
         case RNG_TRAVERSE:
             return traverse_index(context, query, node);
+        case RNG_READ_NODE:
+            query->_current_node = *node;
+            query->_state = RNG_RESUME;
+            /* FALL THROUGH */
         case RNG_RESUME:
             return process_leaf(context, query, node);
         case RNG_READ_VALUE:
             return process_value(context, query);
         default:
+            context->done = 1;
             return -1;
     }
 }
