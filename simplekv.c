@@ -615,6 +615,7 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
                 argp_failure(state, 1, 0, "invalid number of requests");
             }
         }
+            break;
 
         case 't': {
             char *endptr = NULL;
@@ -623,6 +624,7 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
                 argp_failure(state, 1, 0, "invalid number of threads");
             }
         }
+            break;
 
         case 'k': {
             char *endptr = NULL;
@@ -633,12 +635,14 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             }
             st->n_commands += 1;
         }
+            break;
 
         case 'g': {
             parse_range(state, st, arg);
             st->range_set = 1;
             st->n_commands += 1;
         }
+            break;
 
         case ARGP_KEY_ARG:
         switch (state->arg_num) {
@@ -667,7 +671,7 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             if (st->n_commands > 1) {
                 argp_error(state, "too many commands specified");
             }
-
+            break;
     }
     return 0;
 }
@@ -704,7 +708,12 @@ int main(int argc, char *argv[]) {
         return iterate_keys(arg_state.filename, arg_state.layers, 0, LONG_MAX, iter_print, NULL);
     }
 
-    /* Range query */
+    /**
+     * Range Query
+     * 
+     * Runs the range query requested at the command line and dumps the values
+     * (as ASCII with whitespace trimmed) to stdout separated by a newline.
+     */
     if (arg_state.range_set) {
         struct RangeQuery query = { 0 };
         set_range(&query, arg_state.range_begin, arg_state.range_end, 0);
@@ -719,7 +728,7 @@ int main(int argc, char *argv[]) {
                 while (isspace(*trimmed)) {
                     ++trimmed;
                 }
-                printf("%s\n", trimmed);
+                fprintf(stdout, "%s\n", trimmed);
             }
             if (prep_range_resume(&query)) {
                 break;
