@@ -138,10 +138,12 @@ int terminate(void) {
 int load(size_t layer_num, char *db_path) {
     printf("Load the database of %lu layers\n", layer_num);
     int db = initialize(layer_num, LOAD_MODE, db_path);
+    int const MB = (1<<20);
 
     // 1. Load the index
-    Node *node;
-    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
+    Node * const node_begin;
+    int node_entries = (MB * 10) / sizeof(Node);
+    if (posix_memalign((void **)&node_begin, 512, node_entries * sizeof(Node))) {
         perror("posix_memalign failed");
         close(db);
         free_globals();
@@ -160,6 +162,8 @@ int load(size_t layer_num, char *db_path) {
     */
     ptr__t next_pos = 1;
     long next_node_offset = 1;
+    Node *node = node_begin;
+    Node * const node_buf_end = node_begin + node_entries;
     for (size_t i = 0; i < layer_num; i++) {
         size_t extent = max_key / layer_cap[i], start_key = 0;
         printf("layer %lu extent %lu\n", i, extent);
@@ -180,29 +184,49 @@ int load(size_t layer_num, char *db_path) {
                               encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
                 next_pos++;
             }
-            write(db, node, sizeof(Node));
+
+            node += 1;
+            if (node == node_buf_end) {
+                write(db, node_begin, node_entries * sizeof(Node));
+                node = node_begin;
+            }
             start_key += extent;
         }
     }
+    /* Write any remaining node buffer */
+    if (node > node_begin) {
+        write(db, node_begin, (node - node_begin) * sizeof(Node));
+    }
+    free(node_begin);
 
     // 2. Load the value log
-    Log *log;
-    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
+    Log * const log_begin;
+    int const log_entries = (MB * 10) / sizeof(Log);
+    if (posix_memalign((void **)&log_begin, 512, log_entries * sizeof(Log))) {
         perror("posix_memalign failed");
         close(db);
-        free(node);
         free_globals();
         exit(1);
     }
+    printf("Writing value heap\n");
+    Log *log = log_begin;
+    Log * const log_end = log_begin + log_entries;
     for (size_t i = 0; i < max_key; i += LOG_CAPACITY) {
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
             sprintf((char *) log->val[j], "%63lu", i + j);
         }
-        write(db, log, sizeof(Log));
+        ++log;
+        if (log == log_end) {
+            write(db, log_begin, log_entries * sizeof(Log));
+            log = log_begin;
+        }
+    }
+    /* Write any remaining entries */
+    if (log != log_begin) {
+        write(db, log_begin, (log - log_begin) * sizeof(Log));
     }
 
-    free(log);
-    free(node);
+    free(log_begin);
     close(db);
     return terminate();
 }
