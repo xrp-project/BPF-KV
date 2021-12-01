@@ -523,13 +523,26 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
     }
 
     /* User space code path */
-    Node node = { 0 };
+
+    /*
+     *  TODO: We might want to pull these allocs out of this function since we're allocating
+     *    new buffers every 32 keys...
+    */
+    char *scratch = aligned_alloc(0x1000, BLK_SIZE);
+    Node *node = (Node*) aligned_alloc(0x1000, sizeof(Node));
+    if (scratch == NULL || node == NULL) {
+        fprintf(stderr, "Aligned alloc failed... panic\n");
+        exit(1);
+    }
+
     if (query->_state == RNG_RESUME) {
-        checked_pread(db_fd, (void *) &node, sizeof(node), (long) query->_resume_from_leaf);
+        checked_pread(db_fd, (void *) node, sizeof(node), (long) query->_resume_from_leaf);
     } else {
         ptr__t node_offset = 0;
-        if (_get_leaf_containing(db_fd, query->range_begin, &node, &node_offset) != 0) {
+        if (_get_leaf_containing(db_fd, query->range_begin, node, &node_offset) != 0) {
             fprintf(stderr, "Failed getting leaf node for key %ld\n", query->range_begin);
+            free(scratch);
+            free(node);
             return 1;
         }
         query->_resume_from_leaf = node_offset;
@@ -541,13 +554,13 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
         /* Iterate over keys in leaf node */
         int i = 0;
         for (; i < NODE_CAPACITY && query->len < RNG_KEYS; ++i) {
-            if (node.key[i] > query->range_end || (node.key[i] == query->range_end && !end_inclusive)) {
+            if (node->key[i] > query->range_end || (node->key[i] == query->range_end && !end_inclusive)) {
                 /* All done; set state and return 0 */
                 mark_range_query_complete(query);
-                return 0;
+                break;
             }
             /* Retrieve value for this key */
-            if (node.key[i] >= first_key) {
+            if (node->key[i] >= first_key) {
                 /*
                  * TODO (etm): We perform one read for each value since our hypothetical assumption is
                  *   that the values are stored in a random heap and not in sorted order (which they actually are).
@@ -558,8 +571,12 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
                  *   This should be discussed before we run performance benchmarks.
                  */
 
-                checked_pread(db_fd, query->kv[query->len].value, sizeof(val__t), (long) decode(node.ptr[i]));
-                query->kv[query->len].key = node.key[i];
+                /* This fiddiling around is necessary since we're using O_DIRECT */
+                ptr__t ptr = decode(node->ptr[i]);
+                checked_pread(db_fd, scratch, BLK_SIZE, (long) value_base(ptr));
+                memcpy(query->kv[query->len].value, scratch + value_offset(ptr), sizeof(val__t));
+
+                query->kv[query->len].key = node->key[i];
                 query->len += 1;
             }
         }
@@ -573,30 +590,33 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
             query->flags |= RNG_BEGIN_EXCLUSIVE;
             if (i < NODE_CAPACITY) {
                 /* This node still has values we should inspect */
-                return 0;
+                break;
             }
 
             /* Need to look at next node */
-            if (node.next == 0) {
+            if (node->next == 0) {
                 /* No next node, so we're done */
                 mark_range_query_complete(query);
             } else {
-                query->_resume_from_leaf = node.next;
+                query->_resume_from_leaf = node->next;
             }
-            return 0;
-        } else if (node.next == 0) {
+            break;
+        } else if (node->next == 0) {
             /* Still have room in query buf, but we've read the entire index */
             mark_range_query_complete(query);
-            return 0;
+            break;
         }
 
         /*
          * Query buff isn't full, so we inspected all keys in this node
          * and need to get the next node.
          */
-        query->_resume_from_leaf = node.next;
-        checked_pread(db_fd, (void *) &node, sizeof(Node), (long) node.next);
+        query->_resume_from_leaf = node->next;
+        checked_pread(db_fd, (void *) node, sizeof(Node), (long) node->next);
     }
+    free(scratch);
+    free(node);
+    return 0;
 }
 
 /**
@@ -759,24 +779,11 @@ int main(int argc, char *argv[]) {
         set_range(&query, arg_state.range_begin, arg_state.range_end, 0);
 
         /* Open the database */
-        int db_fd;
-        if (arg_state.xrp) {
-            db_fd = get_handler(arg_state.filename, O_RDONLY);
-        } else {
-            db_fd = open(arg_state.filename, O_RDONLY);
-            if (db_fd < 0) {
-                perror("Failed to open db:");
-                exit(1);
-            }
-        }
+        int db_fd = get_handler(arg_state.filename, O_RDONLY);
 
         /* Retrieve values in range and print */
         for (;;) {
             submit_range_query(&query, db_fd, arg_state.xrp);
-            // if (submit_range_query(&query, db_fd, arg_state.xrp)) {
-            //     fprintf(stderr, "Range query failed\n");
-            //     exit(1);
-            // }
             for (int i = 0; i < query.len; ++i) {
                 char buf[sizeof(val__t) + 1] = { 0 };
                 buf[sizeof(val__t)] = '\0';
