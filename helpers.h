@@ -4,10 +4,14 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <alloca.h>
+#include <stdint.h>
 
 #include "db_types.h"
 
 #define SYS_IMPOSTER_PREAD64 445
+
+#define aligned_alloca(align, size)     (((uintptr_t) alloca((size) + (align) - 1) + ((align) - 1)) & ~ (uintptr_t) ((align) - 1));
 
 long lookup_bpf(int db_fd, struct Query *query);
 

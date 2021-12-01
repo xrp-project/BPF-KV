@@ -11,8 +11,8 @@
 
 long lookup_bpf(int db_fd, struct Query *query) {
     /* Set up buffers and query */
-    char *buf = aligned_alloc(0x1000, 0x1000);
-    char *scratch = aligned_alloc(0x1000, SCRATCH_SIZE);
+    char *buf = (char *) aligned_alloca(0x1000, 0x1000);
+    char *scratch = (char *) aligned_alloca(0x1000, SCRATCH_SIZE);
     memset(buf, 0, 0x1000);
     memset(scratch, 0, 0x1000);
 
@@ -29,8 +29,6 @@ long lookup_bpf(int db_fd, struct Query *query) {
         memcpy(query->value, maybe_v->value, sizeof(val__t));
     }
 
-    free(buf);
-    free(scratch);
     return ret;
 }
 

@@ -256,10 +256,6 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 }
 
 int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp) {
-    if (!use_xrp) {
-        fprintf(stderr, "Running without XRP is currently unimplemented\n");
-        exit(0);
-    }
 
     printf("Running benchmark with %ld layers, %ld requests, and %ld thread(s)\n",
                 layer_num, request_num, thread_num);
@@ -301,8 +297,14 @@ void *subtask(void *args) {
         clock_gettime(CLOCK_REALTIME, &tps);
 
         struct Query query = new_query(key);
-        long retval = lookup_bpf(r->db_handler, &query);
-        
+
+        long retval;
+        if (r->use_xrp) {
+            retval = lookup_bpf(r->db_handler, &query);
+        } else {
+            retval = lookup_key_userspace(r->db_handler, &query);
+        }
+
         clock_gettime(CLOCK_REALTIME, &tpe);
         r->timer += 1000000000 * (tpe.tv_sec - tps.tv_sec) + (tpe.tv_nsec - tps.tv_nsec);
 
@@ -332,9 +334,11 @@ void read_node(ptr__t ptr, Node *node, int db_handler) {
 
 /* Function using the same bit fiddling that we use in the BPF function */
 static void read_value_the_hard_way(int fd, char *retval, ptr__t ptr) {
-    /* Base of the block containing our vale */
+    /* Aligned buffer for O_DIRECT read */
+    char *buf = (char *) aligned_alloca(BLK_SIZE, BLK_SIZE);
+
+    /* Base of the block containing our value */
     ptr__t base = decode(ptr) & ~(BLK_SIZE - 1);
-    char buf[BLK_SIZE];
     checked_pread(fd, buf, BLK_SIZE, (long) base);
     ptr__t offset = decode(ptr) & (BLK_SIZE - 1);
     memcpy(retval, buf + offset, sizeof(val__t));
@@ -368,8 +372,8 @@ static char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
         exit(1);
     }
 
+    struct Query query = new_query(key);
     if (use_xrp) {
-        struct Query query = new_query(key);
         long ret = lookup_bpf(db_fd, &query);
 
         if (ret < 0) {
@@ -383,21 +387,29 @@ static char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
             printf("result not found\n");
             exit(1);
         }
-        memcpy(retval, query.value, sizeof(query.value));
     } else {
-        /* Traverse b+ tree index in db to find value and verify the key exists in leaf node */
-        Node node = { 0 };
-        if (get_leaf_containing(db_fd, key, &node) != 0 || !key_exists(key, &node)) {
+        if (lookup_key_userspace(db_fd, &query)) {
             free(retval);
             close(db_fd);
             return NULL;
         }
-
-        /* Now we're at a leaf node, and ptr points to the log entry */
-        read_value_the_hard_way(db_fd, retval, nxt_node(key, &node));
+        /* Traverse b+ tree index in db to find value and verify the key exists in leaf node */
     }
+    memcpy(retval, query.value, sizeof(query.value));
     close(db_fd);
     return retval;
+}
+
+long lookup_key_userspace(int db_fd, struct Query *query) {
+    /* Traverse b+ tree index in db to find value and verify the key exists in leaf node */
+    Node node = { 0 };
+    if (get_leaf_containing(db_fd, query->key, &node) != 0 || !key_exists(query->key, &node)) {
+        query->found = 0;
+        return -1;
+    }
+    read_value_the_hard_way(db_fd, (char *) query->value, nxt_node(query->key, &node));
+    query->found = 1;
+    return 0;
 }
 
 static int lookup_single_key(char *filename, long key, int use_xrp) {
@@ -429,27 +441,21 @@ static int lookup_single_key(char *filename, long key, int use_xrp) {
  * @return 0 on success (node retrieved), -1 on error
  */
 int _get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t *node_offset) {
-    Node *const tmp_node;
-    if (posix_memalign((void**) &tmp_node, 512, sizeof(Node))) {
-        return -1;
-    }
+    Node *const tmp_node = (Node *) aligned_alloca(BLK_SIZE, sizeof(Node));
     long bytes_read = pread(database_fd, tmp_node, sizeof(Node), ROOT_NODE_OFFSET);
     if (bytes_read != sizeof(Node)) {
-        free(tmp_node);
         return -1;
     }
     ptr__t ptr = nxt_node(key, tmp_node);
     while (tmp_node->type != LEAF) {
         bytes_read = pread(database_fd, tmp_node, sizeof(Node), (long) decode(ptr));
         if (bytes_read != sizeof(Node)) {
-            free(tmp_node);
             return -1;
         }
         *node_offset = ptr;
         ptr = nxt_node(key, tmp_node);
     }
     *node = *tmp_node;
-    free(tmp_node);
     return 0;
 }
 
@@ -509,11 +515,10 @@ int iterate_keys(char *filename, int levels, long start_key, long end_key,
 }
 
 int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
+    char *scratch = (char *) aligned_alloca(0x1000, 0x1000);
+    memset(scratch, 0, 0x1000);
     if (use_xrp) {
-        char *buf = aligned_alloc(0x1000, 0x1000);
-        char *scratch = aligned_alloc(0x1000, SCRATCH_SIZE);
-        memset(buf, 0, 0x1000);
-        memset(scratch, 0, 0x1000);
+        char *buf = (char *) aligned_alloca(0x1000, 0x1000);
 
         struct RangeQuery *scratch_query = (struct RangeQuery*) scratch;
         *scratch_query = *query;
@@ -523,17 +528,7 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
     }
 
     /* User space code path */
-
-    /*
-     *  TODO: We might want to pull these allocs out of this function since we're allocating
-     *    new buffers every 32 keys...
-    */
-    char *scratch = aligned_alloc(0x1000, BLK_SIZE);
-    Node *node = (Node*) aligned_alloc(0x1000, sizeof(Node));
-    if (scratch == NULL || node == NULL) {
-        fprintf(stderr, "Aligned alloc failed... panic\n");
-        exit(1);
-    }
+    Node *node = (Node *) aligned_alloca(BLK_SIZE, sizeof(Node));
 
     if (query->_state == RNG_RESUME) {
         checked_pread(db_fd, (void *) node, sizeof(node), (long) query->_resume_from_leaf);
@@ -541,8 +536,6 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
         ptr__t node_offset = 0;
         if (_get_leaf_containing(db_fd, query->range_begin, node, &node_offset) != 0) {
             fprintf(stderr, "Failed getting leaf node for key %ld\n", query->range_begin);
-            free(scratch);
-            free(node);
             return 1;
         }
         query->_resume_from_leaf = node_offset;
@@ -557,7 +550,7 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
             if (node->key[i] > query->range_end || (node->key[i] == query->range_end && !end_inclusive)) {
                 /* All done; set state and return 0 */
                 mark_range_query_complete(query);
-                break;
+                return 0;
             }
             /* Retrieve value for this key */
             if (node->key[i] >= first_key) {
@@ -590,7 +583,7 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
             query->flags |= RNG_BEGIN_EXCLUSIVE;
             if (i < NODE_CAPACITY) {
                 /* This node still has values we should inspect */
-                break;
+                return 0;
             }
 
             /* Need to look at next node */
@@ -600,11 +593,11 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
             } else {
                 query->_resume_from_leaf = node->next;
             }
-            break;
+            return 0;
         } else if (node->next == 0) {
             /* Still have room in query buf, but we've read the entire index */
             mark_range_query_complete(query);
-            break;
+            return 0;
         }
 
         /*
@@ -614,9 +607,6 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
         query->_resume_from_leaf = node->next;
         checked_pread(db_fd, (void *) node, sizeof(Node), (long) node->next);
     }
-    free(scratch);
-    free(node);
-    return 0;
 }
 
 /**

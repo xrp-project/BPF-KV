@@ -72,6 +72,8 @@ int terminate(void);
 int _get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t *node_offset);
 int get_leaf_containing(int database_fd, key__t key, Node *node);
 
+long lookup_key_userspace(int db_fd, struct Query *query);
+
 int compare_nodes(Node *x, Node *y);
 
 void print_node(ptr__t ptr, Node *node);
