@@ -49,11 +49,11 @@ ptr__t decode(ptr__t ptr) {
 
 int load(size_t layer_num, char *db_path);
 
-int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp);
+int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp, size_t cache_level);
 
 void *subtask(void *args);
 
-void build_cache(int db_fd, size_t layer_num);
+void build_cache(int db_fd, size_t layer_num, size_t cache_level);
 
 void read_node(ptr__t ptr, Node *node, int db_handler);
 

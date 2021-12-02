@@ -10,6 +10,8 @@
 #include "simplekv.h"
 #include "helpers.h"
 
+#define CACHE_ARG_KEY 1337
+
 struct ArgState {
     /* Separate Commands */
     int create;
@@ -27,6 +29,7 @@ struct ArgState {
     long key;
     long range_begin;
     long range_end;
+    size_t cache_level;
 
     /* Required Args */
     char *filename;
@@ -96,9 +99,19 @@ int initialize(size_t layer_num, int mode, char *db_path) {
 }
 
 /* Cache the first [layer_num] layers of the tree */
-void build_cache(int db_fd, size_t layer_num) {
+void build_cache(int db_fd, size_t layer_num, size_t cache_level) {
+    /* Cache level cannot exceed min(layer_num, 3) */
+    cache_level = cache_level > layer_num ? layer_num : cache_level;
+    cache_level = cache_level > 3 ? 3 : cache_level;
+
+    /* NB: This is a hack, but since we have global variables we need this */
+    if (cache_level == 0) {
+        cache = malloc(BLK_SIZE);
+        return;
+    }
+
     size_t entry_num = 0;
-    for (size_t i = 0; i < layer_num; i++) {
+    for (size_t i = 0; i < cache_level; i++) {
         entry_num += layer_cap[i];
     }
     
@@ -120,7 +133,7 @@ void build_cache(int db_fd, size_t layer_num) {
     }
 
     cache_cap = entry_num; // enable the cache
-    printf("Cache built. %lu layers %lu entries in total.\n", layer_num, entry_num);
+    printf("Cache built. %lu layers %lu entries in total.\n", cache_level, entry_num);
 }
 
 void free_globals(void) {
@@ -255,13 +268,14 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
     }
 }
 
-int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp) {
+int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp,
+            size_t cache_level) {
 
     printf("Running benchmark with %ld layers, %ld requests, and %ld thread(s)\n",
                 layer_num, request_num, thread_num);
     int db_fd = initialize(layer_num, RUN_MODE, db_path);
     /* Cache up to 3 layers of the B+tree */
-    build_cache(db_fd, layer_num > 3 ? 3 : layer_num);
+    build_cache(db_fd, layer_num, cache_level);
 
     worker_num = thread_num;
     struct timespec start, end;
@@ -649,6 +663,16 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             st->n_commands += 1;
             break;
 
+        case CACHE_ARG_KEY: {
+            char *endptr = NULL;
+            long cache_level = strtol(arg, &endptr, 10);
+            if ((endptr != NULL && *endptr != '\0') || cache_level< 0 || cache_level > 3) {
+                argp_failure(state, 1, 0, "invalid cache level. Allowed: 0 <= level <= 3");
+            }
+            st->cache_level = (size_t) cache_level;
+        }
+            break;
+
         case 'd':
             st->dump_keys = 1;
             st->n_commands += 1;
@@ -721,6 +745,9 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             if (st->n_commands > 1) {
                 argp_error(state, "too many commands specified");
             }
+            if (st->cache_level > st->layers) {
+                argp_error(state, "number of cache layers exceeds database layers");
+            }
             break;
     }
     return 0;
@@ -729,6 +756,7 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
 int main(int argc, char *argv[]) {
     struct argp_option options[] = {
         { "create", 'c', 0, 0, "Create a new database with n layers." },
+        { "cache", CACHE_ARG_KEY, "NUM", 0, "Number of B+ tree layers to cache, up to 3 max. Default is 0." },
         { "key", 'k', "KEY", 0, "Retrieve a single key from the database." },
         { "dump-keys", 'd', 0, 0, "Scan leaf nodes and dump keys in order." },
         { "range-query", 'g', "begin,end", 0, "Lookup values with keys in range [begin, end)" },
@@ -793,5 +821,6 @@ int main(int argc, char *argv[]) {
     }
 
     /* Default: Run the SimpleKV benchmark */
-    return run(arg_state.filename, arg_state.layers, arg_state.requests, arg_state.threads, arg_state.xrp);
+    return run(arg_state.filename, arg_state.layers, arg_state.requests,
+                arg_state.threads, arg_state.xrp, arg_state.cache_level);
 }
