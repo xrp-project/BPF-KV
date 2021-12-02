@@ -7,6 +7,10 @@
 #include <bpf/bpf_helpers.h>
 #include "simplekvspec.h"
 
+#ifndef NULL
+#define NULL 0
+#endif
+
 #ifndef memcpy
 #define memcpy(dest, src, n)   __builtin_memcpy((dest), (src), (n))
 #endif

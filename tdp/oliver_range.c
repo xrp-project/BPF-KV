@@ -7,6 +7,10 @@
 #include <bpf/bpf_helpers.h>
 #include "simplekvspec.h"
 
+#ifndef NULL
+#define NULL 0
+#endif
+
 /* Mask to prevent out of bounds memory access */
 #define KEY_MASK (RNG_KEYS - 1)
 

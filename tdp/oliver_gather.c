@@ -7,6 +7,10 @@
 #include <bpf/bpf_helpers.h>
 #include "simplekvspec.h"
 
+#ifndef NULL
+#define NULL 0
+#endif
+
 char LICENSE[] SEC("license") = "GPL";
 
 static __inline int key_exists(unsigned long const key, Node *node) {
