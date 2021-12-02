@@ -11,7 +11,6 @@
 #include "db_types.h"
 
 // Database-level information
-#define LOG_PATH "./oliver_log"
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
@@ -28,7 +27,6 @@ typedef struct {
     size_t index;
     int db_handler;
     size_t timer;
-    int log_handler;
     int use_xrp;
 } WorkerArg;
 

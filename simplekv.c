@@ -64,16 +64,6 @@ int get_handler(char *db_path, int flag) {
     return fd;
 }
 
-/* TODO (etm): Probably want to delete this... seems to be unused */
-int get_log_handler(int flag) {
-    int fd = open(LOG_PATH, flag | O_DIRECT, 0755);
-    if (fd < 0) {
-        printf("Fail to open file %s!\n", LOG_PATH);
-        exit(0);
-    }
-    return fd;
-}
-
 /* Open database and logfile; calculate number of nodes per layer of B+tree */
 int initialize(size_t layer_num, int mode, char *db_path) {
     int db;
@@ -269,7 +259,6 @@ void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path, i
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
         args[i].db_handler = get_handler(db_path, O_RDONLY);
-        args[i].log_handler = get_log_handler(O_RDONLY);
         args[i].timer = 0;
         args[i].use_xrp = use_xrp;
     }
