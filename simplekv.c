@@ -200,7 +200,12 @@ int load(size_t layer_num, char *db_path) {
 
             node += 1;
             if (node == node_buf_end) {
-                write(db, node_begin, node_entries * sizeof(Node));
+                ssize_t write_size = node_entries * sizeof(Node);
+                ssize_t bytes_written = write(db, node_begin, write_size);
+                if (bytes_written != write_size) {
+                    fprintf(stderr, "failure: partial write of index node\n");
+                    exit(1);
+                }
                 node = node_begin;
             }
             start_key += extent;
@@ -208,7 +213,12 @@ int load(size_t layer_num, char *db_path) {
     }
     /* Write any remaining node buffer */
     if (node > node_begin) {
-        write(db, node_begin, (node - node_begin) * sizeof(Node));
+        ssize_t write_size = (node - node_begin) * sizeof(Node);
+        ssize_t bytes_written = write(db, node_begin, write_size);
+        if (bytes_written != write_size) {
+            fprintf(stderr, "failure: partial write of index node\n");
+            exit(1);
+        }
     }
     free(node_begin);
 
@@ -230,13 +240,23 @@ int load(size_t layer_num, char *db_path) {
         }
         ++log;
         if (log == log_end) {
-            write(db, log_begin, log_entries * sizeof(Log));
+            ssize_t write_size = log_entries * sizeof(Log);
+            ssize_t bytes_written = write(db, log_begin, write_size);
+            if (bytes_written != write_size) {
+                fprintf(stderr, "failure: partial write of log data\n");
+                exit(1);
+            }
             log = log_begin;
         }
     }
     /* Write any remaining entries */
     if (log != log_begin) {
-        write(db, log_begin, (log - log_begin) * sizeof(Log));
+        ssize_t write_size = (log - log_begin) * sizeof(Log);
+        ssize_t bytes_written = write(db, log_begin, write_size);
+        if (bytes_written != write_size) {
+            fprintf(stderr, "failure: partial write of log data\n");
+            exit(2);
+        }
     }
 
     free(log_begin);
