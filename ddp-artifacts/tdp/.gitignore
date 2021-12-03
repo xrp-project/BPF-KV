@@ -1,0 +1,5 @@
+*.ll
+*.o
+*.insn
+*.out
+a.out
