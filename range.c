@@ -99,7 +99,10 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
         *scratch_query = *query;
         long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, query->_resume_from_leaf);
         *query = *scratch_query;
-        return ret;
+        if (ret > 0) {
+            return 0;
+        }
+        return (int) ret;
     }
 
     /* User space code path */
