@@ -37,11 +37,11 @@ static inline ptr__t value_offset(ptr__t ptr) {
     return ptr & (BLK_SIZE - 1);
 }
 
-static inline ptr__t encode(ptr__t ptr) {
+static __inline ptr__t encode(ptr__t ptr) {
     return ptr | FILE_MASK;
 }
 
-static inline ptr__t decode(ptr__t ptr) {
+static __inline ptr__t decode(ptr__t ptr) {
     return ptr & (~FILE_MASK);
 }
 

@@ -13,14 +13,6 @@
 #define memcpy(dest, src, n)   __builtin_memcpy((dest), (src), (n))
 #endif
 
-static __inline ptr__t encode(ptr__t ptr) {
-    return ptr | FILE_MASK;
-}
-
-static __inline ptr__t decode(ptr__t ptr) {
-    return ptr & (~FILE_MASK);
-}
-
 // struct
 struct ddp_key{
 	unsigned char data[512];
