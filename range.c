@@ -11,15 +11,20 @@
 #include "helpers.h"
 
 static void print_query_results(struct RangeQuery *query) {
-    char buf[sizeof(val__t) + 1] = { 0 };
-    buf[sizeof(val__t)] = '\0';
-    for (int i = 0; i < query->len; ++i) {
-        memcpy(buf, query->kv[i].value, sizeof(val__t));
-        char *trimmed = buf;
-        while (isspace(*trimmed)) {
-            ++trimmed;
+    if (query->agg_op == AGG_NONE) {
+        char buf[sizeof(val__t) + 1] = { 0 };
+        buf[sizeof(val__t)] = '\0';
+        for (int i = 0; i < query->len; ++i) {
+            memcpy(buf, query->kv[i].value, sizeof(val__t));
+            char *trimmed = buf;
+            while (isspace(*trimmed)) {
+                ++trimmed;
+            }
+            fprintf(stdout, "%s\n", trimmed);
         }
-        fprintf(stdout, "%s\n", trimmed);
+    }
+    else {
+        fprintf(stdout, "%ld\n", query->agg_value);
     }
 }
 
@@ -37,7 +42,7 @@ int do_range_cmd(int argc, char *argv[], struct ArgState *as) {
      * Runs the range query requested at the command line and dumps the values
      * (as ASCII with whitespace trimmed) to stdout separated by a newline.
      */
-    struct RangeQuery query = { 0 };
+    struct RangeQuery query = { .agg_op = ra.agg_op };
 
     /* Open the database */
     int db_fd = get_handler(as->filename, O_RDONLY);
@@ -145,10 +150,17 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
                 /* This fiddiling around is necessary since we're using O_DIRECT */
                 ptr__t ptr = decode(node->ptr[i]);
                 checked_pread(db_fd, scratch, BLK_SIZE, (long) value_base(ptr));
-                memcpy(query->kv[query->len].value, scratch + value_offset(ptr), sizeof(val__t));
+                /* What we do next depends on the type of opp we're doing */
+                if (query->agg_op == AGG_NONE) {
+                    memcpy(query->kv[query->len].value, scratch + value_offset(ptr), sizeof(val__t));
 
-                query->kv[query->len].key = node->key[i];
-                query->len += 1;
+                    query->kv[query->len].key = node->key[i];
+                    query->len += 1;
+                }
+                else if (query->agg_op == AGG_SUM) {
+                    long *value = (long *) (scratch + value_offset(ptr));
+                    query->agg_value += *value;
+                }
             }
         }
 

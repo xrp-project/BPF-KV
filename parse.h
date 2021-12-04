@@ -4,6 +4,7 @@
 #include <argp.h>
 
 #define CACHE_ARG_KEY 1337
+#define RANGE_SUM_KEY 9999
 
 struct ArgState {
     /* Required Args */
@@ -34,7 +35,7 @@ struct RangeArgs {
     long requests;
     long range_size;
 
-    int layers;
+    int agg_op;
 };
 
 static inline struct ArgState default_argstate() {

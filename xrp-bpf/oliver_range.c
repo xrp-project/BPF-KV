@@ -104,8 +104,15 @@ static __inline unsigned int process_leaf(struct bpf_imposter *context, struct R
 static __inline unsigned int process_value(struct bpf_imposter *context, struct RangeQuery *query) {
     int *i = &query->_node_key_ix;
     unsigned long offset = value_offset(decode(query->_current_node.ptr[*i & KEY_MASK]));
-    memcpy(query->kv[query->len & KEY_MASK].value, context->data + offset, sizeof(val__t));
-    query->len += 1;
+
+    if (query->agg_op == AGG_NONE) {
+        memcpy(query->kv[query->len & KEY_MASK].value, context->data + offset, sizeof(val__t));
+        query->len += 1;
+    }
+    else if (query->agg_op == AGG_SUM) {
+        query->agg_value += *(long) (context->data + offset);
+    }
+
     *i += 1;
     query->_state = RNG_RESUME;
     return process_leaf(context, query, &query->_current_node);

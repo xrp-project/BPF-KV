@@ -110,6 +110,7 @@ void parse_get_opts(int argc, char *argv[], struct GetArgs *get_args) {
 /* Parsing for range query benchmark */
 static struct argp_option range_opts[] = {
         { "dump", 'd', 0, 0, "Dump values to stdout." },
+        { "sum", RANGE_SUM_KEY, 0, 0, "Sum the first 8 bytes of each value instead of returning them."},
         { "use-xrp", 'x', 0, 0, "Use the (previously) loaded XRP BPF function to query the DB." },
         { "requests", 'r', "REQ", 0, "Number of requests to submit per thread. Ignored if -k is set." },
         { "range-size", 's', "SIZE", 0, "Size of randomly generated ranges for benchmarking." },
@@ -139,6 +140,10 @@ static int _parse_range_opts(int key, char *arg, struct argp_state *state) {
 
         case 'd':
             st->dump_flag = 1;
+            break;
+
+        case RANGE_SUM_KEY:
+            st->agg_op = AGG_SUM;
             break;
 
         case 'r': {
