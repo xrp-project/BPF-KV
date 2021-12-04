@@ -57,12 +57,8 @@ int initialize(size_t layer_num, int mode, char *db_path) {
         layer_cap[i] = layer_cap[i - 1] * FANOUT;
         total_node += layer_cap[i];
     }
+    /* NOTE: this is actually 1 past the last key, since the keys start at 0 */
     max_key = layer_cap[layer_num - 1] * NODE_CAPACITY;
-
-    if (max_key != calculate_max_key(layer_num)) {
-        fprintf(stderr, "max key assertion %ld %ld\n", max_key, calculate_max_key(layer_num));
-        exit(1);
-    }
 
     cache_cap = 0;
 
