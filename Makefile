@@ -6,12 +6,21 @@ LDFLAGS = -pthread
 all: simplekv
 
 
-simplekv: simplekv.c helpers.c simplekv.h helpers.h db_types.h
+simplekv: simplekv.c simplekv.h db_types.h helpers.o range.o parse.o create.o get.o
 
+helpers.o: helpers.c helpers.h db_types.h
+
+range.o: range.c range.h db_types.h parse.h db_types.h simplekv.h helpers.h
+
+parse.o: parse.c parse.h
+
+create.o: create.c create.h parse.h db_types.h simplekv.h
+
+get.o : get.c get.h db_types.h parse.h simplekv.h
 
 .PHONY: clean
 clean:
-	rm -rf simplekv
+	rm -rf simplekv *.o
 
 
 .PHONY: clean

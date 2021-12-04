@@ -2,12 +2,43 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 
 #include "helpers.h"
 
+/**
+ * Get the leaf node that MAY contain [key].
+ *
+ * Note: It is up to the caller to verify that the node actually contains [key].
+ * If it does not, then [key] does not exist in the database.
+ *
+ * @param database_fd - File descriptor for open database file
+ * @param key
+ * @param *node - Pointer to Node that will be populated on success
+ * @return 0 on success (node retrieved), -1 on error
+ */
+int _get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t *node_offset) {
+    Node *const tmp_node = (Node *) aligned_alloca(BLK_SIZE, sizeof(Node));
+    long bytes_read = pread(database_fd, tmp_node, sizeof(Node), ROOT_NODE_OFFSET);
+    if (bytes_read != sizeof(Node)) {
+        return -1;
+    }
+    ptr__t ptr = nxt_node(key, tmp_node);
+    while (tmp_node->type != LEAF) {
+        bytes_read = pread(database_fd, tmp_node, sizeof(Node), (long) decode(ptr));
+        if (bytes_read != sizeof(Node)) {
+            return -1;
+        }
+        *node_offset = ptr;
+        ptr = nxt_node(key, tmp_node);
+    }
+    *node = *tmp_node;
+    return 0;
+}
+
+int get_leaf_containing(int database_fd, key__t key, Node *node) {
+    ptr__t x = 0;
+    return _get_leaf_containing(database_fd, key, node, &x);
+}
 
 long lookup_bpf(int db_fd, struct Query *query) {
     /* Set up buffers and query */

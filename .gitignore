@@ -6,6 +6,8 @@ onlyonmachine/
 nndb
 db
 simplekv
+*.o
 
+# Dev cookies
 .idea
 .vscode

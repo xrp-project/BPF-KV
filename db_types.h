@@ -18,6 +18,9 @@ typedef unsigned long ptr__t;
 
 #define ROOT_NODE_OFFSET 0
 
+// Node offset "encoding"
+#define FILE_MASK ((ptr__t)1 << 63)
+
 // Node-level information
 #define INTERNAL 0
 #define LEAF 1
@@ -32,6 +35,18 @@ static inline ptr__t value_base(ptr__t ptr) {
 
 static inline ptr__t value_offset(ptr__t ptr) {
     return ptr & (BLK_SIZE - 1);
+}
+
+static inline ptr__t encode(ptr__t ptr) {
+    return ptr | FILE_MASK;
+}
+
+static inline ptr__t decode(ptr__t ptr) {
+    return ptr & (~FILE_MASK);
+}
+
+static inline ptr__t is_file_offset(ptr__t ptr) {
+    return ptr & FILE_MASK;
 }
 
 typedef struct _Node {
