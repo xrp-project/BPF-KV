@@ -29,9 +29,12 @@ struct GetArgs {
 struct RangeArgs {
     int dump_flag;
     int xrp;
-    long range_begin;
-    long range_end;
+    unsigned long range_begin;
+    unsigned long range_end;
     long requests;
+    long range_size;
+
+    int layers;
 };
 
 static inline struct ArgState default_argstate() {
@@ -39,9 +42,16 @@ static inline struct ArgState default_argstate() {
     return as;
 }
 
+struct Range {
+    unsigned long begin;
+    unsigned long end;
+};
+
 int run_subcommand(struct argp_state *state, char *cmd_name, int(*subcommand)(int argc, char* argv[], struct ArgState*));
 
-void parse_range(struct argp_state *state, struct RangeArgs *st, char *range_str);
+
+
+int parse_range(struct Range *range, char *range_str);
 
 void parse_range_opts(int argc, char *argv[], struct RangeArgs *range_args);
 

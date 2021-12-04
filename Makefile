@@ -12,7 +12,7 @@ helpers.o: helpers.c helpers.h db_types.h
 
 range.o: range.c range.h db_types.h parse.h db_types.h simplekv.h helpers.h
 
-parse.o: parse.c parse.h
+parse.o: parse.c parse.h helpers.h
 
 create.o: create.c create.h parse.h db_types.h simplekv.h
 

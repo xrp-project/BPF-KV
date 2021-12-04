@@ -26,6 +26,10 @@ static void print_query_results(struct RangeQuery *query) {
 int do_range_cmd(int argc, char *argv[], struct ArgState *as) {
     struct RangeArgs ra = { .requests = 1 };
     parse_range_opts(argc, argv, &ra);
+    if (ra.range_size && ra.range_size - 1 > calculate_max_key(as->layers)) {
+        fprintf(stderr, "range size exceeds database size\n");
+        exit(1);
+    }
 
     /**
      * Range Query
@@ -42,8 +46,18 @@ int do_range_cmd(int argc, char *argv[], struct ArgState *as) {
     struct timespec start, stop, l_start, l_stop;
     long total_time = 0, total_latency = 0;
     clock_gettime(CLOCK_REALTIME, &start);
+
+    /* Used to generate random ranges */
+    srandom(start.tv_nsec ^ start.tv_sec);
+    max_key = calculate_max_key(as->layers);
+
     for (long i = 0; i < ra.requests; ++i) {
+        if (ra.range_size) {
+            ra.range_begin = random() % (max_key + 2 - ra.range_size);
+            ra.range_end = ra.range_begin + ra.range_size;
+        }
         set_range(&query, ra.range_begin, ra.range_end, 0);
+
         for (;;) {
             clock_gettime(CLOCK_REALTIME, &l_start);
             int rv = submit_range_query(&query, db_fd, ra.xrp);

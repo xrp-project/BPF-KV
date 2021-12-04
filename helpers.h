@@ -51,4 +51,6 @@ static inline unsigned long strtoul_or_exit(char *str, char *fail_msg) {
 
 int compare_nodes(Node *x, Node *y);
 
+long calculate_max_key(unsigned int layers);
+
 #endif /* HELPERS_H */

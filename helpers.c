@@ -120,3 +120,12 @@ int compare_nodes(Node *x, Node *y) {
         }
     return 1;
 }
+
+long calculate_max_key(unsigned int layers) {
+    long result = 1;
+    for (int i = 0; i < layers; ++i) {
+        result *= FANOUT;
+    }
+    /* Subtract one due to zero indexing of keys */
+    return result - 1;
+}

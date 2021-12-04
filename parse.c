@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "parse.h"
+#include "helpers.h"
 
 /* Parsing for main */
 
@@ -111,20 +112,28 @@ static struct argp_option range_opts[] = {
         { "dump", 'd', 0, 0, "Dump values to stdout." },
         { "use-xrp", 'x', 0, 0, "Use the (previously) loaded XRP BPF function to query the DB." },
         { "requests", 'r', "REQ", 0, "Number of requests to submit per thread. Ignored if -k is set." },
+        { "range-size", 's', "SIZE", 0, "Size of randomly generated ranges for benchmarking." },
         { 0 }
 };
-static char range_doc[] = "Perform a range query against the specified database\v";
+static char range_doc[] = "Perform a range query against the specified database\v"
+                          "Note: Range argument is only optional if --range-size is specified.";
 
 static int _parse_range_opts(int key, char *arg, struct argp_state *state) {
     struct RangeArgs *st = state->input;
     switch (key) {
         case ARGP_KEY_ARG:
             switch (state->arg_num) {
-                case 0:
-                    parse_range(state, st, arg);
+                case 0: {
+                    struct Range range = {0};
+                    if (parse_range(&range, arg) != 0) {
+                        argp_error(state, "invalid range");
+                    }
+                    st->range_begin = range.begin;
+                    st->range_end = range.end;
                     break;
                 default:
-                    argp_error(state, "too many arguments");
+                        argp_error(state, "too many arguments");
+                }
             }
             break;
 
@@ -136,7 +145,7 @@ static int _parse_range_opts(int key, char *arg, struct argp_state *state) {
             char *endptr = NULL;
             st->requests = strtol(arg, &endptr, 10);
             if ((endptr != NULL && *endptr != '\0') || st->requests < 0) {
-                argp_failure(state, 1, 0, "invalid number of requests");
+                argp_error(state, "invalid number of requests");
             }
         }
             break;
@@ -145,8 +154,17 @@ static int _parse_range_opts(int key, char *arg, struct argp_state *state) {
             st->xrp = 1;
             break;
 
+        case 's': {
+            char *endptr = NULL;
+            st->range_size = strtol(arg, &endptr, 10);
+            if ((endptr != NULL && *endptr != '\0') || st->range_size < 0) {
+                argp_error(state, "invalid number of requests");
+            }
+        }
+            break;
+
         case ARGP_KEY_END:
-            if (state->arg_num != 1) {
+            if (state->arg_num != 1 && st->range_size == 0) {
                 argp_error(state, "no range specified");
             }
             break;
@@ -158,7 +176,7 @@ static int _parse_range_opts(int key, char *arg, struct argp_state *state) {
 }
 
 void parse_range_opts(int argc, char *argv[], struct RangeArgs *range_args) {
-    struct argp argp = {range_opts, _parse_range_opts, "BEGIN,END", range_doc};
+    struct argp argp = {range_opts, _parse_range_opts, "[BEGIN,END]", range_doc};
     argp_parse(&argp, argc, argv, 0, 0, range_args);
 }
 
@@ -200,22 +218,23 @@ int run_subcommand(struct argp_state *state, char *cmd_name, int (*subcommand)(i
  * @param st
  * @param range_str
  */
-void parse_range(struct argp_state *state, struct RangeArgs *st, char *range_str) {
+int parse_range(struct Range *range, char *range_str) {
     /* Parse range query params */
     char *comma = strchr(range_str, ',');
     if (comma == NULL) {
-        argp_failure(state, 1, 0, "Invalid range specified");
+        return -1;
     }
     *comma = '\0';
 
     char *endptr = NULL;
-    st->range_begin = strtol(range_str, &endptr, 10);
+    range->begin = strtoul(range_str, &endptr, 10);
     if ((endptr != NULL && *endptr != '\0')) {
-        argp_failure(state, 1, 0, "Invalid range specified");
+        return -1;
     }
     endptr = NULL;
-    st->range_end = strtol(comma + 1, &endptr, 10);
+    range->end = strtoul(comma + 1, &endptr, 10);
     if ((endptr != NULL && *endptr != '\0')) {
-        argp_failure(state, 1, 0, "Invalid range specified");
+        return -1;
     }
+    return 0;
 }

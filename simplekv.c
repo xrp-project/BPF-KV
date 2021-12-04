@@ -58,6 +58,12 @@ int initialize(size_t layer_num, int mode, char *db_path) {
         total_node += layer_cap[i];
     }
     max_key = layer_cap[layer_num - 1] * NODE_CAPACITY;
+
+    if (max_key != calculate_max_key(layer_num)) {
+        fprintf(stderr, "max key assertion %ld %ld\n", max_key, calculate_max_key(layer_num));
+        exit(1);
+    }
+
     cache_cap = 0;
 
     printf("%lu blocks in total, max key is %lu\n", total_node, max_key);
@@ -154,6 +160,7 @@ int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, 
     initialize_workers(args, request_num, db_path, use_xrp);
 
     clock_gettime(CLOCK_REALTIME, &start);
+    srandom(start.tv_nsec ^ start.tv_sec);
     start_workers(tids, args);
     terminate_workers(tids, args);
     clock_gettime(CLOCK_REALTIME, &end);
@@ -174,7 +181,7 @@ void *subtask(void *args) {
     srand(r->index);
     printf("thread %ld op_count %ld\n", r->index, r->op_count);
     for (size_t i = 0; i < r->op_count; i++) {
-        key__t key = rand() % max_key;
+        key__t key = random() % max_key;
 
         /* Time and execute the XRP lookup */
         clock_gettime(CLOCK_REALTIME, &tps);
