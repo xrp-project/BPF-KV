@@ -35,4 +35,6 @@ clean:
 
 
 .PHONY: copy
+copy:
 	cp oliver_drop2.o oliver_gather.o oliver_range.o ${HOME}/kv-test/
+
