@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <argp.h>
 #include <fcntl.h>
+#include <time.h>
 
 #include "range.h"
 #include "parse.h"
@@ -23,7 +24,7 @@ static void print_query_results(struct RangeQuery *query) {
 }
 
 int do_range_cmd(int argc, char *argv[], struct ArgState *as) {
-    struct RangeArgs ra = { 0 };
+    struct RangeArgs ra = { .requests = 1 };
     parse_range_opts(argc, argv, &ra);
 
     /**
@@ -33,24 +34,42 @@ int do_range_cmd(int argc, char *argv[], struct ArgState *as) {
      * (as ASCII with whitespace trimmed) to stdout separated by a newline.
      */
     struct RangeQuery query = { 0 };
-    set_range(&query, ra.range_begin, ra.range_end, 0);
 
     /* Open the database */
     int db_fd = get_handler(as->filename, O_RDONLY);
 
     /* Retrieve values in range and print */
-    for (;;) {
-        int rv = submit_range_query(&query, db_fd, ra.xrp);
-        if (rv != 0) {
-            exit(rv);
-        }
-        if (ra.dump_flag) {
-            print_query_results(&query);
-        }
-        if (prep_range_resume(&query)) {
-            break;
+    struct timespec start, stop, l_start, l_stop;
+    long total_time = 0, total_latency = 0;
+    clock_gettime(CLOCK_REALTIME, &start);
+    for (long i = 0; i < ra.requests; ++i) {
+        set_range(&query, ra.range_begin, ra.range_end, 0);
+        for (;;) {
+            clock_gettime(CLOCK_REALTIME, &l_start);
+            int rv = submit_range_query(&query, db_fd, ra.xrp);
+            clock_gettime(CLOCK_REALTIME, &l_stop);
+
+            total_latency += NS_PER_SEC * (l_stop.tv_sec - l_start.tv_sec) + (l_stop.tv_nsec - l_start.tv_nsec);
+
+            if (rv != 0) {
+                exit(rv);
+            }
+            if (ra.dump_flag) {
+                print_query_results(&query);
+            }
+            if (prep_range_resume(&query)) {
+                break;
+            }
         }
     }
+    clock_gettime(CLOCK_REALTIME, &stop);
+    total_time = NS_PER_SEC * (stop.tv_sec - start.tv_sec) + (stop.tv_nsec - start.tv_nsec);
+
+    /* Dump results */
+    double throughput = ((double) ra.requests / (double) total_time) * NS_PER_SEC; // ops/sec
+    double latency = (double) total_latency / (double) ra.requests / US_PER_NS;
+    printf("Average throughput: %f op/s latency: %f usec\n", throughput, latency);
+
     close(db_fd);
     return 0;
 }

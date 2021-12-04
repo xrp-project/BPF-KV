@@ -110,6 +110,7 @@ void parse_get_opts(int argc, char *argv[], struct GetArgs *get_args) {
 static struct argp_option range_opts[] = {
         { "dump", 'd', 0, 0, "Dump values to stdout." },
         { "use-xrp", 'x', 0, 0, "Use the (previously) loaded XRP BPF function to query the DB." },
+        { "requests", 'r', "REQ", 0, "Number of requests to submit per thread. Ignored if -k is set." },
         { 0 }
 };
 static char range_doc[] = "Perform a range query against the specified database\v";
@@ -129,6 +130,15 @@ static int _parse_range_opts(int key, char *arg, struct argp_state *state) {
 
         case 'd':
             st->dump_flag = 1;
+            break;
+
+        case 'r': {
+            char *endptr = NULL;
+            st->requests = strtol(arg, &endptr, 10);
+            if ((endptr != NULL && *endptr != '\0') || st->requests < 0) {
+                argp_failure(state, 1, 0, "invalid number of requests");
+            }
+        }
             break;
 
         case 'x':

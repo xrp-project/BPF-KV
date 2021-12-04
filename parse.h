@@ -31,7 +31,7 @@ struct RangeArgs {
     int xrp;
     long range_begin;
     long range_end;
-
+    long requests;
 };
 
 static inline struct ArgState default_argstate() {
