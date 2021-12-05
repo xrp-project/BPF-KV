@@ -42,8 +42,8 @@ static int _parse_get_opts(int key, char *arg, struct argp_state *state) {
     switch (key) {
         case CACHE_ARG_KEY: {
             char *endptr = NULL;
-            long cache_level = strtol(arg, &endptr, 10);
-            if ((endptr != NULL && *endptr != '\0') || cache_level< 0 || cache_level > 3) {
+            unsigned long cache_level = strtoul(arg, &endptr, 10);
+            if ((endptr != NULL && *endptr != '\0') || cache_level > 3) {
                 argp_failure(state, 1, 0, "invalid cache level. Allowed: 0 <= level <= 3");
             }
             st->cache_level = (size_t) cache_level;

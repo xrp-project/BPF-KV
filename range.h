@@ -13,7 +13,7 @@ int iter_print(int idx, Node *node, void *state);
 
 typedef int(*key_iter_action)(int idx, Node *node, void *state);
 
-int iterate_keys(char *filename, int levels, long start_key, long end_key,
+int iterate_keys(char *filename, int levels, key__t start_key, key__t end_key,
                  key_iter_action fn, void *fn_state);
 
 #endif /* _RANGE_H */

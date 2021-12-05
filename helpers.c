@@ -70,7 +70,7 @@ void checked_pread(int fd, void *buf, size_t size, long offset) {
         perror("checked_pread: ");
         exit(1);
     }
-    if (bytes_read != size) {
+    if ((size_t) bytes_read != size) {
         fprintf(stderr, "partial read %ld bytes of Node\n", bytes_read);
         exit(1);
     }
@@ -99,7 +99,7 @@ ptr__t nxt_node(unsigned long key, Node *node) {
  * @return 1 if [key] exists, else 0
  */
 int key_exists(unsigned long const key, Node const *node) {
-    for (int i = 0; i < NODE_CAPACITY; ++i) {
+    for (unsigned int i = 0; i < NODE_CAPACITY; ++i) {
         if (node->key[i] == key) {
             return 1;
         }
@@ -123,7 +123,7 @@ int compare_nodes(Node *x, Node *y) {
 
 long calculate_max_key(unsigned int layers) {
     long result = 1;
-    for (int i = 0; i < layers; ++i) {
+    for (unsigned int i = 0; i < layers; ++i) {
         result *= FANOUT;
     }
     /* Subtract one due to zero indexing of keys */

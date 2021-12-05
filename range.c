@@ -128,7 +128,7 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
     unsigned long end_inclusive = query->flags & RNG_END_INCLUSIVE;
     for(;;) {
         /* Iterate over keys in leaf node */
-        int i = 0;
+        unsigned int i = 0;
         for (; i < NODE_CAPACITY && query->len < RNG_KEYS; ++i) {
             if (node->key[i] > query->range_end || (node->key[i] == query->range_end && !end_inclusive)) {
                 /* All done; set state and return 0 */
@@ -210,7 +210,7 @@ int iter_print(int idx, Node *node, void *state) {
  * real generics it isn't monomorphized. Keep this in mind for benchmarks.
  * Maybe we should use C++ or inline the [key_iter_action].
  **/
-int iterate_keys(char *filename, int levels, long start_key, long end_key,
+int iterate_keys(char *filename, int levels, key__t start_key, key__t end_key,
                  key_iter_action fn, void *fn_state) {
     if (levels < 2) {
         fprintf(stderr, "Too few levels for dump-keys operation\n");
@@ -230,7 +230,7 @@ int iterate_keys(char *filename, int levels, long start_key, long end_key,
     }
     printf("Dumping keys in B+ tree\n");
     for (;;) {
-        for (int i = 0; i < NODE_CAPACITY; ++i) {
+        for (unsigned int i = 0; i < NODE_CAPACITY; ++i) {
             if (node.key[i] >= end_key) {
                 break;
             }
