@@ -51,7 +51,14 @@ static __inline unsigned int process_leaf(struct bpf_imposter *context, struct R
                 /* Set up the next resubmit to read the value */
                 context->next_addr[0] = value_base(decode(node->ptr[*i & KEY_MASK]));
                 context->size[0] = BLK_SIZE;
-                query->kv[query->len & KEY_MASK].key = node->key[*i & KEY_MASK];
+
+                key__t key = node->key[*i & KEY_MASK];
+                query->kv[query->len & KEY_MASK].key = key;
+
+                /* Fixup the begin range so that we don't try to grab the same key again */
+                query->range_begin = key;
+                query->flags |= RNG_BEGIN_EXCLUSIVE;
+
                 query->_state = RNG_READ_VALUE;
                 return 0;
             }
