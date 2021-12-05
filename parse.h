@@ -38,7 +38,7 @@ struct RangeArgs {
     int agg_op;
 };
 
-static inline struct ArgState default_argstate() {
+static inline struct ArgState default_argstate(void) {
     struct ArgState as = { 0 };
     return as;
 }

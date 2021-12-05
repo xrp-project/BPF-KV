@@ -11,3 +11,6 @@ simplekv
 # Dev cookies
 .idea
 .vscode
+
+# Makefile junk
+*.d
