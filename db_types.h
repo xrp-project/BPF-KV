@@ -29,11 +29,11 @@ typedef unsigned long ptr__t;
 #define LOG_CAPACITY  ((BLK_SIZE) / (VAL_SIZE))
 #define FANOUT NODE_CAPACITY
 
-static inline ptr__t value_base(ptr__t ptr) {
+static __inline ptr__t value_base(ptr__t ptr) {
     return ptr & ~(BLK_SIZE - 1);
 }
 
-static inline ptr__t value_offset(ptr__t ptr) {
+static __inline ptr__t value_offset(ptr__t ptr) {
     return ptr & (BLK_SIZE - 1);
 }
 
@@ -146,7 +146,7 @@ struct RangeQuery {
     /* Internal data: Pointer to leaf node used by the BPF to resume the query */
     unsigned int _state;
     ptr__t _resume_from_leaf;
-    int _node_key_ix;
+    unsigned int _node_key_ix;
     Node _current_node;
 };
 
@@ -183,7 +183,7 @@ static inline int prep_range_resume(struct RangeQuery *query) {
 }
 
 /* Mark a range query complete; `empty_range` will return true after marking the query with this function */
-static inline void mark_range_query_complete(struct RangeQuery *query) {
+static __inline void mark_range_query_complete(struct RangeQuery *query) {
     query->range_begin = query->range_end;
     query->flags |= RNG_BEGIN_EXCLUSIVE;
     query->flags &= ~RNG_END_INCLUSIVE;

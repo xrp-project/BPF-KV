@@ -34,7 +34,7 @@ static __inline unsigned int process_leaf(struct bpf_imposter *context, struct R
     // unsigned int end_inclusive = query->flags & RNG_END_INCLUSIVE;
     
     /* Iterate over keys in leaf node */
-    int *i = &query->_node_key_ix;
+    unsigned int *i = &query->_node_key_ix;
     for(;;) {
         /* Iterate over keys in leaf node */
         for (; *i < NODE_CAPACITY && query->len < RNG_KEYS; ++(*i)) {
@@ -102,7 +102,7 @@ static __inline unsigned int process_leaf(struct bpf_imposter *context, struct R
 }
 
 static __inline unsigned int process_value(struct bpf_imposter *context, struct RangeQuery *query) {
-    int *i = &query->_node_key_ix;
+    unsigned int *i = &query->_node_key_ix;
     unsigned long offset = value_offset(decode(query->_current_node.ptr[*i & KEY_MASK]));
 
     if (query->agg_op == AGG_NONE) {
@@ -110,10 +110,16 @@ static __inline unsigned int process_value(struct bpf_imposter *context, struct 
         query->len += 1;
     }
     else if (query->agg_op == AGG_SUM) {
-        query->agg_value += *(long) (context->data + offset);
+        query->agg_value += *(long *) (context->data + offset);
     }
 
-    *i += 1;
+    /* TODO: This should be incremented, but not doing so does not affect correctness.
+     *   For some reason, if we do increment, the verifier complains in `process_leaf` about
+     *   access using the query->_node_key_ix variable to index into the node's key / ptr array.
+     *   It seems like this shouldn't be an issue due to the loop invariant, but the verifier
+     *   disagrees...
+     */
+    // *i += 1;
     query->_state = RNG_RESUME;
     return process_leaf(context, query, &query->_current_node);
 }
