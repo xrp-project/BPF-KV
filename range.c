@@ -158,8 +158,7 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
                     query->len += 1;
                 }
                 else if (query->agg_op == AGG_SUM) {
-                    long *value = (long *) (scratch + value_offset(ptr));
-                    query->agg_value += *value;
+                    query->agg_value += *(long*) (scratch + value_offset(ptr));
                 }
             }
         }

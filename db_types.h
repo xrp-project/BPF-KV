@@ -138,10 +138,8 @@ struct RangeQuery {
 
     /* Number of populated values */
     int len;
-    union {
-        struct KeyValue kv[RNG_KEYS];
-        long agg_value;
-    };
+    struct KeyValue kv[RNG_KEYS];
+    long agg_value;
 
     /* Internal data: Pointer to leaf node used by the BPF to resume the query */
     unsigned int _state;

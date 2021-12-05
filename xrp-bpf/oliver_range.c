@@ -31,23 +31,22 @@ static __inline ptr__t nxt_node(unsigned long key, Node *node) {
 
 static __inline unsigned int process_leaf(struct bpf_imposter *context, struct RangeQuery *query, Node *node) {
     key__t first_key = query->flags & RNG_BEGIN_EXCLUSIVE ? query->range_begin + 1 : query->range_begin;
-    // unsigned int end_inclusive = query->flags & RNG_END_INCLUSIVE;
+    unsigned int end_inclusive = query->flags & RNG_END_INCLUSIVE;
     
     /* Iterate over keys in leaf node */
     unsigned int *i = &query->_node_key_ix;
     for(;;) {
         /* Iterate over keys in leaf node */
         for (; *i < NODE_CAPACITY && query->len < RNG_KEYS; ++(*i)) {
-            if (node->key[*i & KEY_MASK] > query->range_end) {
-                /* TODO (etm): We should be checking for end_inclusive, but the eBPF verifier gets mad if we do... */
-                    // || (node->key[*i & KEY_MASK] == query->range_end && end_inclusive == 0)) {
+            key__t curr_key = node->key[*i & KEY_MASK];
+            if (curr_key > query->range_end || (curr_key == query->range_end && !end_inclusive)) {
                 /* All done; set state and return 0 */
                 mark_range_query_complete(query);
                 context->done = 1;
                 return 0;
             }
             /* Retrieve value for this key */
-            if (node->key[*i & KEY_MASK] >= first_key) {
+            if (curr_key >= first_key) {
                 /* Set up the next resubmit to read the value */
                 context->next_addr[0] = value_base(decode(node->ptr[*i & KEY_MASK]));
                 context->size[0] = BLK_SIZE;
