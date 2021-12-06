@@ -87,7 +87,8 @@ int do_range_cmd(int argc, char *argv[], struct ArgState *as) {
     /* Dump results */
     double throughput = ((double) ra.requests / (double) total_time) * NS_PER_SEC; // ops/sec
     double latency = (double) total_latency / (double) ra.requests / US_PER_NS;
-    printf("Average throughput: %f op/s latency: %f usec\n", throughput, latency);
+    unsigned long range_size = ra.range_size ? ra.range_size : ra.range_end - ra.range_begin;
+    printf("Range Size: %lu, Average throughput: %f op/s latency: %f usec\n", range_size, throughput, latency);
 
     close(db_fd);
     return 0;
