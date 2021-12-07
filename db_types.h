@@ -175,7 +175,7 @@ static inline int empty_range(struct RangeQuery const *query) {
  */
 static inline int prep_range_resume(struct RangeQuery *query) {
     query->len = 0;
-    query->flags |= RNG_RESUME;
+    query->_state = RNG_RESUME;
     /* Check if there are no more keys to retrieve */
     return empty_range(query);
 }
