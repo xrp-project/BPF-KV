@@ -25,9 +25,11 @@ int do_get_cmd(int argc, char *argv[], struct ArgState *as) {
     return run(as->filename, as->layers, ga.requests, ga.threads, ga.xrp, ga.cache_level);
 }
 
+
+
 int lookup_single_key(char *filename, long key, int use_xrp) {
     /* Lookup Single Key */
-    char *value = grab_value(filename, key, use_xrp);
+    char *value = grab_value(filename, key, use_xrp, ROOT_NODE_OFFSET);
     printf("Key: %ld\n", key);
     if (value == NULL) {
         printf("Value not found\n");
@@ -42,7 +44,7 @@ int lookup_single_key(char *filename, long key, int use_xrp) {
     return 0;
 }
 
-char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
+char *grab_value(char *file_name, unsigned long const key, int use_xrp, ptr__t index_offset) {
     char *const retval = malloc(sizeof(val__t) + 1);
     if (retval == NULL) {
         perror("malloc");
@@ -52,7 +54,6 @@ char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
     retval[sizeof(val__t)] = '\0';
 
     /* Open the database */
-    // TODO (etm): This is never closed
     int flags = O_RDONLY;
     if (use_xrp) {
         flags = flags | O_DIRECT;
@@ -65,7 +66,7 @@ char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
 
     struct Query query = new_query(key);
     if (use_xrp) {
-        long ret = lookup_bpf(db_fd, &query);
+        long ret = lookup_bpf(db_fd, &query, index_offset);
 
         if (ret < 0) {
             printf("reached leaf? %ld\n", query.state_flags);
@@ -79,7 +80,7 @@ char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
             exit(1);
         }
     } else {
-        if (lookup_key_userspace(db_fd, &query)) {
+        if (lookup_key_userspace(db_fd, &query, index_offset)) {
             free(retval);
             close(db_fd);
             return NULL;
@@ -96,13 +97,15 @@ char *grab_value(char *file_name, unsigned long const key, int use_xrp) {
  * [key] from the heap, if [key] is in the database.
  * @param file_name
  * @param key
+ * @param index_offset Offset into the B+tree index to begin the traversal inside the index
+ *        if caching is used.
  * @return null terminated string containing the value on disk, or NULL if key not found
  */
 
-long lookup_key_userspace(int db_fd, struct Query *query) {
+long lookup_key_userspace(int db_fd, struct Query *query, ptr__t index_offset) {
     /* Traverse b+ tree index in db to find value and verify the key exists in leaf node */
     Node node = { 0 };
-    if (get_leaf_containing(db_fd, query->key, &node) != 0 || !key_exists(query->key, &node)) {
+    if (get_leaf_containing(db_fd, query->key, &node, index_offset) != 0 || !key_exists(query->key, &node)) {
         query->found = 0;
         return -1;
     }

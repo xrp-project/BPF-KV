@@ -16,7 +16,7 @@
 
 #define aligned_alloca(align, size)     (((uintptr_t) alloca((size) + (align) - 1) + ((align) - 1)) & ~ (uintptr_t) ((align) - 1));
 
-long lookup_bpf(int db_fd, struct Query *query);
+long lookup_bpf(int db_fd, struct Query *query, ptr__t index_offset);
 
 void checked_pread(int fd, void *buf, size_t size, long offset);
 
@@ -24,8 +24,8 @@ ptr__t nxt_node(unsigned long key, Node *node);
 
 int key_exists(unsigned long key, Node const *node);
 
-int _get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t *node_offset);
-int get_leaf_containing(int database_fd, key__t key, Node *node);
+int _get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t index_offset, ptr__t *node_offset);
+int get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t index_offset);
 
 static inline long strtol_or_exit(char *str, char *fail_msg) {
     char *endptr = NULL;

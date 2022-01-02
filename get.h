@@ -9,9 +9,9 @@ int do_get_cmd(int argc, char *argv[], struct ArgState *as);
 
 int lookup_single_key(char *filename, long key, int use_xrp);
 
-char *grab_value(char *file_name, unsigned long key, int use_xrp);
+char *grab_value(char *file_name, unsigned long key, int use_xrp, ptr__t index_offset);
 
-long lookup_key_userspace(int db_fd, struct Query *query);
+long lookup_key_userspace(int db_fd, struct Query *query, ptr__t index_offset);
 
 void read_value_the_hard_way(int fd, char *retval, ptr__t ptr);
 

@@ -118,7 +118,7 @@ int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp) {
         checked_pread(db_fd, (void *) node, sizeof(Node), (long) query->_resume_from_leaf);
     } else {
         ptr__t node_offset = 0;
-        if (_get_leaf_containing(db_fd, query->range_begin, node, &node_offset) != 0) {
+        if (_get_leaf_containing(db_fd, query->range_begin, node, ROOT_NODE_OFFSET, &node_offset) != 0) {
             fprintf(stderr, "Failed getting leaf node for key %ld\n", query->range_begin);
             return 1;
         }
@@ -225,7 +225,7 @@ int iterate_keys(char *filename, int levels, key__t start_key, key__t end_key,
     }
 
     Node node = { 0 };
-    if (get_leaf_containing(db_fd, start_key, &node) != 0) {
+    if (get_leaf_containing(db_fd, start_key, &node, ROOT_NODE_OFFSET) != 0) {
         fprintf(stderr, "Failed dumping keys\n");
         exit(1);
     }

@@ -186,9 +186,9 @@ void *subtask(void *args) {
 
         long retval;
         if (r->use_xrp) {
-            retval = lookup_bpf(r->db_handler, &query);
+            retval = lookup_bpf(r->db_handler, &query, ROOT_NODE_OFFSET);
         } else {
-            retval = lookup_key_userspace(r->db_handler, &query);
+            retval = lookup_key_userspace(r->db_handler, &query, ROOT_NODE_OFFSET);
         }
 
         clock_gettime(CLOCK_REALTIME, &tpe);

@@ -16,9 +16,9 @@
  * @param *node - Pointer to Node that will be populated on success
  * @return 0 on success (node retrieved), -1 on error
  */
-int _get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t *node_offset) {
+int _get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t index_offset, ptr__t *node_offset) {
     Node *const tmp_node = (Node *) aligned_alloca(BLK_SIZE, sizeof(Node));
-    long bytes_read = pread(database_fd, tmp_node, sizeof(Node), ROOT_NODE_OFFSET);
+    long bytes_read = pread(database_fd, tmp_node, sizeof(Node), (long) index_offset);
     if (bytes_read != sizeof(Node)) {
         return -1;
     }
@@ -35,12 +35,12 @@ int _get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t *node_o
     return 0;
 }
 
-int get_leaf_containing(int database_fd, key__t key, Node *node) {
+int get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t index_offset) {
     ptr__t x = 0;
-    return _get_leaf_containing(database_fd, key, node, &x);
+    return _get_leaf_containing(database_fd, key, node, index_offset, &x);
 }
 
-long lookup_bpf(int db_fd, struct Query *query) {
+long lookup_bpf(int db_fd, struct Query *query, ptr__t index_offset) {
     /* Set up buffers and query */
     char *buf = (char *) aligned_alloca(0x1000, 0x1000);
     char *scratch = (char *) aligned_alloca(0x1000, SCRATCH_SIZE);
@@ -52,7 +52,7 @@ long lookup_bpf(int db_fd, struct Query *query) {
     sgq->n_keys = 1;
 
     /* Syscall to invoke BPF function that we loaded out-of-band previously */
-    long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, 0);
+    long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, index_offset);
 
     struct MaybeValue *maybe_v = &sgq->values[0];
     query->found = (long) maybe_v->found;
