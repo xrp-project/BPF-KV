@@ -28,7 +28,8 @@ void parse_create_opts(int argc, char *argv[]) {
 
 /* Parsing for get key benchmark */
 static struct argp_option get_opts[] = {
-        { "cache", CACHE_ARG_KEY, "NUM", 0, "Number of B+ tree layers to cache, up to 3 max. Default is 0." },
+        { "cache", CACHE_ARG_KEY, "NUM", 0, "Number of B+ tree layers to cache."
+                                            " Must be less than 3 and the number of database layers." },
         { "key", 'k', "KEY", 0, "Retrieve a single key from the database." },
         { "use-xrp", 'x', 0, 0, "Use the (previously) loaded XRP BPF function to query the DB." },
         { "requests", 'r', "REQ", 0, "Number of requests to submit per thread. Ignored if -k is set." },
@@ -92,6 +93,14 @@ static int _parse_get_opts(int key, char *arg, struct argp_state *state) {
         case ARGP_KEY_END:
             if (st->cache_level > st->database_layers) {
                 argp_error(state, "number of cache layers exceeds database layers");
+            }
+            else if (st->cache_level == st->database_layers) {
+                /*
+                 * This is enforced to avoid additional refactoring to handle the case where
+                 * the entire index is cached.
+                 * Currently, our retreival functions assume at least one level of the index is traversed.
+                 */
+                argp_error(state, "number of cache layers must be less than number of database layers");
             }
             break;
 

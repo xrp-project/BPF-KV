@@ -24,7 +24,7 @@ size_t cache_cap;
 const char *argp_program_version = "SimpleKV 0.1";
 const char *argp_program_bug_address = "<etm2131@columbia.edu>";
 static char doc[] =
-"SimpleKV Benchmark for Oliver XRP Kernel\n\nCommands: create, range\v\
+"SimpleKV Benchmark for Oliver XRP Kernel\n\nCommands: create, get, range\v\
 This utility provides several tools for testing and benchmarking \
 SimpleKV database files on XRP enabled kernels. \
 \n\nIf you are using XRP eBPF functions it is your responsibility to ensure \
@@ -184,11 +184,21 @@ void *subtask(void *args) {
 
         struct Query query = new_query(key);
 
+        ptr__t index_offset = ROOT_NODE_OFFSET;
+        /* Use the cache, if it's set */
+        if (cache_cap > 0) {
+            index_offset = (ptr__t) (&cache[0]);
+            do {
+                index_offset = nxt_node(key, (Node *) index_offset);
+            } while (!is_file_offset(index_offset));
+            index_offset = decode(index_offset);
+        }
+
         long retval;
         if (r->use_xrp) {
             retval = lookup_bpf(r->db_handler, &query, ROOT_NODE_OFFSET);
         } else {
-            retval = lookup_key_userspace(r->db_handler, &query, ROOT_NODE_OFFSET);
+            retval = lookup_key_userspace(r->db_handler, &query, index_offset);
         }
 
         clock_gettime(CLOCK_REALTIME, &tpe);
