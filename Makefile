@@ -1,9 +1,9 @@
 CC = gcc
-CFLAGS = -Wall -pthread -D_GNU_SOURCE -g -O0 -Wunused
+CFLAGS = -Wall -pthread -D_GNU_SOURCE -Wunused
 LDFLAGS = -pthread
 
 
-all: simplekv
+all: simplekv bpf loader
 
 
 simplekv: simplekv.c simplekv.h db_types.h helpers.o range.o parse.o create.o get.o
@@ -18,11 +18,13 @@ create.o: create.c create.h parse.h db_types.h simplekv.h
 
 get.o : get.c get.h db_types.h parse.h simplekv.h
 
+loader: xrp_loader.c
+	clang xrp_loader.c -o xrp_loader -lbpf
+
+.PHONY: bpf
+bpf:
+	make -C xrp-bpf -f Makefile
+
 .PHONY: clean
 clean:
 	rm -rf simplekv *.o
-
-
-.PHONY: clean
-copy:
-	cp simplekv ${HOME}/kv-test
