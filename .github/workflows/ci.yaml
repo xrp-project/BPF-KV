@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+
+  ci:
+    name: ci
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+
+      - name: Build
+        run: make simplekv
+
+      # XXX: We use 5 layers because the GitHub runners don't have enough space
+      - name: Test create command
+        run: ./simplekv 5-layer-db 5 create
+
+      - name: Test get command (userspace-mode)
+        run: ./simplekv 5-layer-db 5 get --threads=1 --requests=10000
+
+      - name: Test range command (userspace-mode)
+        run: ./simplekv 5-layer-db 5 range --range-size=10 --requests=10000
+
+      # TODO: Investigate how to run XRP tests
+      # Needs either:
+      # - VM running capabilities
+      # - A machine with the custom kernel
