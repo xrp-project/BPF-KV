@@ -35,8 +35,8 @@ SimpleKV currently DOES NOT verify that the correct eBPF is loaded.";
 int get_handler(char *db_path, int flag) {
     int fd = open(db_path, flag | O_DIRECT, 0655);
     if (fd < 0) {
-        printf("Fail to open file %s!\n", db_path);
-        exit(0);
+        printf("Failed to open file %s!\n", db_path);
+        exit(1);
     }
     return fd;
 }
@@ -49,7 +49,7 @@ int initialize(size_t layer_num, int mode, char *db_path) {
     } else {
         db = get_handler(db_path, O_RDONLY);
     }
-    
+
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
     total_node = 1;
     layer_cap[0] = 1;
@@ -83,7 +83,7 @@ void build_cache(int db_fd, size_t layer_num, size_t cache_level) {
     for (size_t i = 0; i < cache_level; i++) {
         entry_num += layer_cap[i];
     }
-    
+
     if (posix_memalign((void **)&cache, 512, entry_num * sizeof(Node))) {
         perror("posix_memalign failed");
         exit(1);
@@ -165,7 +165,7 @@ int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, 
     for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
     long run_time = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
 
-    printf("Average throughput: %f op/s latency: %f usec\n", 
+    printf("Average throughput: %f op/s latency: %f usec\n",
             (double)request_num / run_time * 1000000000, (double)total_latency / request_num / 1000);
 
     return terminate();
@@ -218,7 +218,7 @@ void *subtask(void *args) {
             fprintf(stderr, "Value for key %ld not found\n", key);
         } else if (key != long_val) {
             printf("Error! key: %lu val: %s thrd: %ld\n", key, buf, r->index);
-        }      
+        }
     }
     return NULL;
 }
