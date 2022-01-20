@@ -82,6 +82,12 @@ With the BPF program loaded, you can run a basic GET benchmark as follows:
 For consistent benchmark results you may need to disable CPU frequency scaling.
 
 
+# Old code
+
+The `ddp-artifacts` folder contains earlier code from the `ddp` kernel, which
+was developed in earlier versions of XRP. It will eventually be removed from
+the repo.
+
 # Contact
 Please reach out to Ioannis Zarkadas at `iz2175 AT columbia DOT edu` or Evan
 Mesterhazy at `etm2131 AT columbia DOT edu` with questions.
