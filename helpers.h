@@ -7,16 +7,22 @@
 #include <alloca.h>
 #include <stdint.h>
 
+#include <linux/bpf.h>
+#include <linux/lirc.h>
+#include <linux/input.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
+
 #include "db_types.h"
 
-#define SYS_IMPOSTER_PREAD64 445
+#define SYS_READ_XRP 445
 
 #define NS_PER_SEC 1000000000
 #define US_PER_NS  1000
 
 #define aligned_alloca(align, size)     (((uintptr_t) alloca((size) + (align) - 1) + ((align) - 1)) & ~ (uintptr_t) ((align) - 1));
 
-long lookup_bpf(int db_fd, struct Query *query, ptr__t index_offset);
+long lookup_bpf(int db_fd, int bpf_fd, struct Query *query, ptr__t index_offset);
 
 void checked_pread(int fd, void *buf, size_t size, long offset);
 
@@ -52,5 +58,7 @@ static inline unsigned long strtoul_or_exit(char *str, char *fail_msg) {
 int compare_nodes(Node *x, Node *y);
 
 long calculate_max_key(unsigned int layers);
+
+int load_bpf_program(char *path);
 
 #endif /* HELPERS_H */

@@ -29,7 +29,7 @@ static __inline ptr__t nxt_node(unsigned long key, Node *node) {
     return node->ptr[NODE_CAPACITY - 1];
 }
 
-static __inline unsigned int process_leaf(struct bpf_imposter *context, struct RangeQuery *query, Node *node) {
+static __inline unsigned int process_leaf(struct bpf_xrp *context, struct RangeQuery *query, Node *node) {
     key__t first_key = query->flags & RNG_BEGIN_EXCLUSIVE ? query->range_begin + 1 : query->range_begin;
     unsigned int end_inclusive = query->flags & RNG_END_INCLUSIVE;
     
@@ -107,7 +107,7 @@ static __inline unsigned int process_leaf(struct bpf_imposter *context, struct R
     }
 }
 
-static __inline unsigned int process_value(struct bpf_imposter *context, struct RangeQuery *query) {
+static __inline unsigned int process_value(struct bpf_xrp *context, struct RangeQuery *query) {
     unsigned int *i = &query->_node_key_ix;
     unsigned long offset = value_offset(decode(query->_current_node.ptr[*i & KEY_MASK]));
 
@@ -130,7 +130,7 @@ static __inline unsigned int process_value(struct bpf_imposter *context, struct 
     return process_leaf(context, query, &query->_current_node);
 }
 
-static __inline unsigned int traverse_index(struct bpf_imposter *context, struct RangeQuery *query, Node *node) {
+static __inline unsigned int traverse_index(struct bpf_xrp *context, struct RangeQuery *query, Node *node) {
     if (node->type == LEAF) {
         query->_current_node = *node;
         return process_leaf(context, query, node);
@@ -143,7 +143,7 @@ static __inline unsigned int traverse_index(struct bpf_imposter *context, struct
 }
 
 SEC("oliver_range")
-unsigned int oliver_range_func(struct bpf_imposter *context) {
+unsigned int oliver_range_func(struct bpf_xrp *context) {
     struct RangeQuery *query = (struct RangeQuery*) context->scratch;
     Node *node = (Node *) context->data;
 

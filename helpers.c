@@ -40,7 +40,7 @@ int get_leaf_containing(int database_fd, key__t key, Node *node, ptr__t index_of
     return _get_leaf_containing(database_fd, key, node, index_offset, &x);
 }
 
-long lookup_bpf(int db_fd, struct Query *query, ptr__t index_offset) {
+long lookup_bpf(int db_fd, int bpf_fd, struct Query *query, ptr__t index_offset) {
     /* Set up buffers and query */
     char *buf = (char *) aligned_alloca(0x1000, 0x1000);
     char *scratch = (char *) aligned_alloca(0x1000, SCRATCH_SIZE);
@@ -52,7 +52,7 @@ long lookup_bpf(int db_fd, struct Query *query, ptr__t index_offset) {
     sgq->n_keys = 1;
 
     /* Syscall to invoke BPF function that we loaded out-of-band previously */
-    long ret = syscall(SYS_IMPOSTER_PREAD64, db_fd, buf, scratch, BLK_SIZE, index_offset);
+    long ret = syscall(SYS_READ_XRP, db_fd, buf, BLK_SIZE, index_offset, bpf_fd, scratch);
 
     struct MaybeValue *maybe_v = &sgq->values[0];
     query->found = (long) maybe_v->found;
@@ -128,4 +128,17 @@ long calculate_max_key(unsigned int layers) {
     }
     /* Subtract one due to zero indexing of keys */
     return result - 1;
+}
+
+int load_bpf_program(char *path) {
+    struct bpf_object *obj;
+    int ret, progfd;
+
+    ret = bpf_prog_load(path, BPF_PROG_TYPE_XRP, &obj, &progfd);
+    if (ret) {
+        printf("Failed to load bpf program\n");
+        exit(1);
+    }
+
+    return progfd;
 }

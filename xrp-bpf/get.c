@@ -43,7 +43,7 @@ static __inline ptr__t nxt_node(unsigned long key, Node *node) {
 /* State flags */
 #define AT_VALUE 1
 
-static __inline void set_context_next_index(struct bpf_imposter *context, struct ScatterGatherQuery *query) {
+static __inline void set_context_next_index(struct bpf_xrp *context, struct ScatterGatherQuery *query) {
     query->current_index += 1;
     query->state_flags = 0;
     if (query->current_index >= query->n_keys || query->current_index >= SG_KEYS) {
@@ -60,7 +60,7 @@ static __inline void set_context_next_index(struct bpf_imposter *context, struct
 #define EBPF_CONTEXT_MASK SG_KEYS - 1
 
 SEC("oliver_agg")
-unsigned int oliver_agg_func(struct bpf_imposter *context) {
+unsigned int oliver_agg_func(struct bpf_xrp *context) {
     struct ScatterGatherQuery *query = (struct ScatterGatherQuery*) context->scratch;
     Node *node = (Node *) context->data;
     int *curr_idx = &query->current_index;

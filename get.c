@@ -18,18 +18,24 @@ int do_get_cmd(int argc, char *argv[], struct ArgState *as) {
     };
     parse_get_opts(argc, argv, &ga);
 
-    if (ga.key_set) {
-        return lookup_single_key(as->filename, ga.key, ga.xrp);
+    /* Load BPF program */
+    int bpf_fd = -1;
+    if (ga.xrp) {
+        bpf_fd = load_bpf_program("xrp-bpf/get.o");
     }
 
-    return run(as->filename, as->layers, ga.requests, ga.threads, ga.xrp, ga.cache_level);
+    if (ga.key_set) {
+        return lookup_single_key(as->filename, ga.key, ga.xrp, bpf_fd);
+    }
+
+    return run(as->filename, as->layers, ga.requests, ga.threads, ga.xrp, bpf_fd, ga.cache_level);
 }
 
 
 
-int lookup_single_key(char *filename, long key, int use_xrp) {
+int lookup_single_key(char *filename, long key, int use_xrp, int bpf_fd) {
     /* Lookup Single Key */
-    char *value = grab_value(filename, key, use_xrp, ROOT_NODE_OFFSET);
+    char *value = grab_value(filename, key, use_xrp, bpf_fd, ROOT_NODE_OFFSET);
     printf("Key: %ld\n", key);
     if (value == NULL) {
         printf("Value not found\n");
@@ -44,7 +50,7 @@ int lookup_single_key(char *filename, long key, int use_xrp) {
     return 0;
 }
 
-char *grab_value(char *file_name, unsigned long const key, int use_xrp, ptr__t index_offset) {
+char *grab_value(char *file_name, unsigned long const key, int use_xrp, int bpf_fd, ptr__t index_offset) {
     char *const retval = malloc(sizeof(val__t) + 1);
     if (retval == NULL) {
         perror("malloc");
@@ -66,7 +72,7 @@ char *grab_value(char *file_name, unsigned long const key, int use_xrp, ptr__t i
 
     struct Query query = new_query(key);
     if (use_xrp) {
-        long ret = lookup_bpf(db_fd, &query, index_offset);
+        long ret = lookup_bpf(db_fd, bpf_fd, &query, index_offset);
 
         if (ret < 0) {
             printf("reached leaf? %ld\n", query.state_flags);

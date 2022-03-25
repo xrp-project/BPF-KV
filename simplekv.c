@@ -116,13 +116,14 @@ int terminate(void) {
     return 0;
 }
 
-void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path, int use_xrp) {
+void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path, int use_xrp, int bpf_fd) {
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
         args[i].db_handler = get_handler(db_path, O_RDONLY);
         args[i].timer = 0;
         args[i].use_xrp = use_xrp;
+        args[i].bpf_fd = bpf_fd;
     }
 }
 
@@ -140,7 +141,7 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 }
 
 int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp,
-            size_t cache_level) {
+            int bpf_fd, size_t cache_level) {
 
     printf("Running benchmark with %ld layers, %ld requests, and %ld thread(s)\n",
                 layer_num, request_num, thread_num);
@@ -153,7 +154,7 @@ int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, 
     pthread_t tids[worker_num];
     WorkerArg args[worker_num];
 
-    initialize_workers(args, request_num, db_path, use_xrp);
+    initialize_workers(args, request_num, db_path, use_xrp, bpf_fd);
 
     clock_gettime(CLOCK_REALTIME, &start);
     srandom(start.tv_nsec ^ start.tv_sec);
@@ -196,7 +197,7 @@ void *subtask(void *args) {
 
         long retval;
         if (r->use_xrp) {
-            retval = lookup_bpf(r->db_handler, &query, ROOT_NODE_OFFSET);
+            retval = lookup_bpf(r->db_handler, r->bpf_fd, &query, ROOT_NODE_OFFSET);
         } else {
             retval = lookup_key_userspace(r->db_handler, &query, index_offset);
         }

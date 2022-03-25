@@ -1,9 +1,9 @@
 CC = gcc
-CFLAGS = -Wall -pthread -D_GNU_SOURCE -Wunused
-LDFLAGS = -pthread
+CFLAGS = -Wall -D_GNU_SOURCE -Wunused
+LDLIBS = -pthread -lbpf
 
 
-all: simplekv bpf loader
+all: simplekv bpf
 
 
 simplekv: simplekv.c simplekv.h db_types.h helpers.o range.o parse.o create.o get.o
@@ -17,9 +17,6 @@ parse.o: parse.c parse.h helpers.h
 create.o: create.c create.h parse.h db_types.h simplekv.h
 
 get.o : get.c get.h db_types.h parse.h simplekv.h
-
-loader: xrp_loader.c
-	clang xrp_loader.c -o xrp_loader -lbpf
 
 .PHONY: bpf
 bpf:

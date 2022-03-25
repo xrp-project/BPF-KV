@@ -7,7 +7,7 @@ struct ArgState;
 
 int do_range_cmd(int argc, char *argv[], struct ArgState*);
 
-int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp);
+int submit_range_query(struct RangeQuery *query, int db_fd, int use_xrp, int bpf_fd);
 
 int iter_print(int idx, Node *node, void *state);
 
