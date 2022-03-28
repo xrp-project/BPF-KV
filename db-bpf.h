@@ -54,6 +54,7 @@ struct ScatterGatherQuery {
     int current_index;
     int n_keys;
     key__t keys[SG_KEYS];
+    val__t values[SG_KEYS];
 };
 
 // Database-level information

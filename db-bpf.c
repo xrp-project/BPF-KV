@@ -432,11 +432,11 @@ void traverse_complete(struct submitter *s) {
     BUG_ON(reaped != 1);
 
     Request *req = (Request *) s->completion_arr[0];
-
+    struct ScatterGatherQuery *sgq = (struct ScatterGatherQuery *) req->scratch_buffer;
     // if (req->is_value) {
         val__t val;
         Log *log = (Log *)req->vec.iov_base;
-        memcpy(val, log->val[req->ofs / VAL_SIZE], VAL_SIZE);
+        memcpy(val, sgq->values, VAL_SIZE);
         if (req->key != atoi(val)) {
             printf("Errror! key: %lu val: %s\n", req->key, val);
         }            
@@ -501,12 +501,10 @@ Request *init_request(key__t key, WorkerArg *warg) {
     Request *req = (Request *)malloc(sizeof(Request));
 
     req->vec.iov_len = BLK_SIZE;
-    if (posix_memalign((void **)&(req->vec.iov_base), BLK_SIZE, BLK_SIZE)) {
+    if (posix_memalign((void **)&(req->vec.iov_base), PAGE_SIZE, PAGE_SIZE)) {
         perror("posix_memalign failed");
         exit(1);
     }
-    // let the BPF function know the key
-    memcpy(req->vec.iov_base, &key, sizeof(key));
 
     req->scratch_buffer = (uint8_t *) aligned_alloc(PAGE_SIZE, PAGE_SIZE);
     BUG_ON(req->scratch_buffer == NULL);
