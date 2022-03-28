@@ -38,7 +38,6 @@ void initialize(size_t layer_num, int mode) {
         db = get_handler(O_RDWR|O_DIRECT);
     }
 
-    ioctl(db, TREENVME_IOCTL_IO_CMD);
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
     total_node = 1;
     layer_cap[0] = 1;
@@ -412,7 +411,7 @@ void traverse(ptr__t ptr, Request *req) {
     int fd = req->warg->db_handler;
  
     memset(req->scratch_buffer, 0, 4096);
-    ScatterGatherQuery *sgq = (ScatterGatherQuery *) req->scratch_buffer;
+    struct ScatterGatherQuery *sgq = (struct ScatterGatherQuery *) req->scratch_buffer;
     sgq->keys[0] = req->key;
     sgq->n_keys = 1;
 
@@ -428,8 +427,7 @@ void traverse_complete(struct submitter *s) {
     ret = io_uring_enter(s->ring_fd, /* to_submit */ 0, /* min_complete */ 1, IORING_ENTER_GETEVENTS);
     BUG_ON(ret != 0);
 
-    // Since queue depth is 1, we expect to reap exactly 1 completion event
-    _Static_assert(QUEUE_DEPTH == 1);
+    // poll_from_cq is changed to reap at most 1 completion
     int reaped = poll_from_cq(s);
     BUG_ON(reaped != 1);
 

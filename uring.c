@@ -156,6 +156,8 @@ int poll_from_cq(struct submitter *s) {
 		}
 		s->completion_arr[reaped++] = cqe->user_data;
 		head++;
+		// XXX: reap at most one
+		break;
 	}
 
 	*cring->head = head;
