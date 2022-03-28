@@ -5,7 +5,13 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <time.h>
-#include <liburing.h>
+#include "uring.h"
+
+#include <linux/bpf.h>
+#include <linux/lirc.h>
+#include <linux/input.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 
 // Data-level information
 typedef unsigned long meta__t;
@@ -39,6 +45,15 @@ typedef struct _Log {
     val__t val[LOG_CAPACITY];
 } Log;
 
+struct ScatterGatherQuery {
+    ptr__t root_pointer;
+    ptr__t value_ptr;
+    unsigned int state_flags;
+    int current_index;
+    int n_keys;
+    key__t keys[SG_KEYS];
+};
+
 // Database-level information
 #define DB_PATH "/dev/treenvme0"
 #define LOAD_MODE 0
@@ -60,14 +75,14 @@ pthread_mutex_t *val_lock;
 size_t read_ratio;
 size_t rmw_ratio;
 size_t req_per_sec;
-struct io_uring global_ring;
+int bpf_fd;
 
 typedef struct {
     size_t op_count;
     size_t index;
     int db_handler;
     size_t timer;
-    struct io_uring local_ring;
+    struct submitter local_ring;
     size_t finished;
     size_t issued;
     size_t *histogram;
@@ -77,6 +92,7 @@ typedef struct {
     key__t key;
     ptr__t ofs;
     struct iovec vec;
+    uint8_t *scratch_buffer;
     bool is_value;
     struct timespec start;
     WorkerArg *warg;
@@ -96,6 +112,8 @@ ptr__t decode(ptr__t ptr) {
     return ptr & (~FILE_MASK);
 }
 
+void init_ring(struct submitter *s);
+
 int load(size_t layer_num);
 
 int run();
@@ -112,37 +130,23 @@ void *print_status(void *args);
 
 int get(key__t key, val__t val, WorkerArg *r);
 
-void update(key__t key, val__t val, int db_handler);
-
-void read_modify_write(key__t key, val__t val, int db_handler);
-
 ptr__t next_node(key__t key, Node *node);
 
 Request *init_request(key__t key, WorkerArg *warg);
 
-void read_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring);
+void pread_node(ptr__t ptr, Node *node, int db_handler);
 
-void read_log(ptr__t ptr, Log *log, int db_handler, struct io_uring *ring);
-
-void read_complete(struct io_uring *ring, int is_node);
+void pread_log(ptr__t ptr, Log *log, int db_handler);
 
 void traverse(ptr__t ptr, Request *req);
 
-void traverse_complete(struct io_uring *ring);
+void traverse_complete(struct submitter *s);
 
-void wait_for_completion(struct io_uring *ring, size_t *counter, size_t target);
+void wait_for_completion(struct submitter *s, size_t *counter, size_t target);
 
-void write_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring);
+void pwrite_node(ptr__t ptr, Node *node, int db_handler);
 
-void write_log(ptr__t ptr, Log *log, int db_handler, struct io_uring *ring);
-
-void write_complete(struct io_uring *ring);
-
-int retrieve_value(ptr__t ptr, val__t val, WorkerArg *r);
-
-void update_value(ptr__t ptr, val__t val, int db_handler);
-
-void read_modify_write_value(ptr__t ptr, val__t val, int db_handler);
+void pwrite_log(ptr__t ptr, Log *log, int db_handler);
 
 int prompt_help();
 
@@ -157,5 +161,9 @@ void terminate_workers(pthread_t *tids, WorkerArg *args);
 int terminate();
 
 void print_node(ptr__t ptr, Node *node);
+
+int bpf(int cmd, union bpf_attr *attr, unsigned int size);
+
+int load_bpf_program(char *path);
 
 #endif

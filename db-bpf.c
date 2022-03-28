@@ -8,6 +8,21 @@
 #include <sys/ioctl.h>
 #include <linux/treenvme_ioctl.h>
 
+void init_ring(struct submitter *s) {
+    int ret;
+
+    memset(s, 0, sizeof(*s));
+    s->batch_size = QUEUE_DEPTH;
+
+    ret = app_setup_uring(s);
+    BUG_ON(ret != 0);
+    ret = io_uring_register(s->ring_fd, IORING_REGISTER_FILES, &db, 1);
+    BUG_ON(ret != 0);
+
+    s->completion_arr = (long *) malloc(s->batch_size * sizeof(long));
+    BUG_ON(s->completion_arr == NULL);
+}
+
 int get_handler(int flag) {
     int fd = open(DB_PATH, flag, 0644);
     if (fd < 0) {
@@ -23,8 +38,7 @@ void initialize(size_t layer_num, int mode) {
     } else {
         db = get_handler(O_RDWR|O_DIRECT);
     }
-    io_uring_queue_init(QUEUE_DEPTH, &global_ring, 0);
-    
+
     ioctl(db, TREENVME_IOCTL_IO_CMD);
     layer_cap = (size_t *)malloc(layer_num * sizeof(size_t));
     total_node = 1;
@@ -68,12 +82,10 @@ void build_cache(size_t layer_num) {
     }
 
     size_t head = 0, tail = 1;
-    read_node(encode(0), &cache[head], db, &global_ring);
-    read_complete(&global_ring, 1);
+    pread_node(encode(0), &cache[head], db);
     while (tail < entry_num) {
         for (size_t i = 0; i < cache[head].num; i++) {
-            read_node(cache[head].ptr[i], &cache[tail], db, &global_ring);
-            read_complete(&global_ring, 1);
+            pread_node(cache[head].ptr[i], &cache[tail], db);
             cache[head].ptr[i] = (ptr__t)(&cache[tail]); // in-memory cache entry has in-memory pointer
             tail++;
         }
@@ -89,7 +101,6 @@ int terminate() {
     free(layer_cap);
     free(cache);
     close(db);
-    io_uring_queue_exit(&global_ring);
     if (val_lock != NULL) {
         free(val_lock);
     }
@@ -121,8 +132,7 @@ int load(size_t layer_num) {
                               encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
                 next_pos++;
             }
-            write_node(encode(idx * BLK_SIZE), node, db, &global_ring);
-            write_complete(&global_ring);
+            pwrite_node(encode(idx * BLK_SIZE), node, db);
             start_key += extent;
             idx++;
 
@@ -131,8 +141,7 @@ int load(size_t layer_num) {
             //     perror("posix_memalign failed");
             //     exit(1);
             // }
-            // read_node(encode(idx-1), tmp, db, &global_ring);
-            // read_complete(&global_ring, 1);
+            // pread_node(encode(idx-1), tmp, db);
             // if (memcmp(node, tmp, sizeof(Node)) != 0) {
             //     printf("Wrong node!\n");
             // }
@@ -151,8 +160,7 @@ int load(size_t layer_num) {
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
             sprintf(log->val[j], "%63lu", i + j);
         }
-        write_log(encode(idx * BLK_SIZE), log, db, &global_ring);
-        write_complete(&global_ring);
+        pwrite_log(encode(idx * BLK_SIZE), log, db);
         idx++;
 
         // Sanity check
@@ -160,8 +168,7 @@ int load(size_t layer_num) {
         //     perror("posix_memalign failed");
         //     exit(1);
         // }
-        // read_log(encode(idx-1), tmp, db, &global_ring);
-        // read_complete(&global_ring, 0);
+        // pread_log(encode(idx-1), tmp, db);
         // if (memcmp(log, tmp, sizeof(Log)) != 0) {
         //     printf("Wrong log!\n");
         // }
@@ -184,7 +191,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count) {
         args[i].issued = 0;
         args[i].histogram = args[0].histogram + offset;
         offset += args[i].op_count;
-        io_uring_queue_init(QUEUE_DEPTH, &args[i].local_ring, 0);
+        init_ring(&args[i].local_ring);
     }
 }
 
@@ -245,6 +252,8 @@ int run() {
     printf("Run the test of %lu requests\n", request_cnt);
     initialize(layer_cnt, RUN_MODE);
     build_cache(layer_cnt > cache_layer ? cache_layer : layer_cnt);
+
+    bpf_fd = load_bpf_program("get.o");
 
     struct timespec start, end;
     pthread_t tids[worker_num + 1];
@@ -399,30 +408,33 @@ int get(key__t key, val__t val, WorkerArg *r) {
 }
 
 void traverse(ptr__t ptr, Request *req) {
-    struct io_uring *ring = &(req->warg->local_ring);
+    struct submitter *s = &(req->warg->local_ring);
     struct iovec *vec = &(req->vec);
     int fd = req->warg->db_handler;
+ 
+    memset(req->scratch_buffer, 0, 4096);
+    ScatterGatherQuery *sgq = (ScatterGatherQuery *) req->scratch_buffer;
+    sgq->keys[0] = req->key;
+    sgq->n_keys = 1;
 
-    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    io_uring_prep_readv(sqe, fd, vec, 1, decode(ptr));
-    io_uring_sqe_set_data(sqe, req);
-    io_uring_submit(ring);
+    submit_to_sq(s, (unsigned long long) req, vec, decode(ptr),
+                 req->scratch_buffer, bpf_fd, true);
+    int ret;
+    ret = io_uring_enter(s->ring_fd, 1, 0, IORING_ENTER_GETEVENTS);
+    BUG_ON(ret != 1);
 }
 
-void traverse_complete(struct io_uring *ring) {
-    struct io_uring_cqe *cqe;
-    int ret = io_uring_wait_cqe(ring, &cqe);
-    if (ret < 0) {
-        perror("io_uring_wait_cqe");
-        return;
-    }
-    if (cqe->res < 0) {
-        fprintf(stderr, "[read_complete] Error in async operation: %s\n", strerror(-cqe->res));
-        return;
-    }
+void traverse_complete(struct submitter *s) {
+    int ret;
+    ret = io_uring_enter(s->ring_fd, /* to_submit */ 0, /* min_complete */ 1, IORING_ENTER_GETEVENTS);
+    BUG_ON(ret != 0);
 
-    Request *req = io_uring_cqe_get_data(cqe);
-    io_uring_cqe_seen(ring, cqe);
+    // Since queue depth is 1, we expect to reap exactly 1 completion event
+    _Static_assert(QUEUE_DEPTH == 1);
+    int reaped = poll_from_cq(s);
+    BUG_ON(reaped != 1);
+
+    Request *req = (Request *) s->completion_arr[0];
 
     // if (req->is_value) {
         val__t val;
@@ -441,6 +453,7 @@ void traverse_complete(struct io_uring *ring) {
         req->warg->histogram[req->warg->finished] = latency;
         req->warg->finished++;
         req->warg->timer += latency;
+        free(req->scratch_buffer);
         free(log);
         free(req);
         // printf("thread %lu start %ld offset %ld end %ld latency %ld us\n", 
@@ -463,58 +476,10 @@ void traverse_complete(struct io_uring *ring) {
     // }
 }
 
-void wait_for_completion(struct io_uring *ring, size_t *counter, size_t target) {
+void wait_for_completion(struct submitter *s, size_t *counter, size_t target) {
     do {
-        traverse_complete(ring);
+        traverse_complete(s);
     } while (*counter != target);
-}
-
-void update(key__t key, val__t val, int db_handler) {
-    ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
-    Node *node;
-
-    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
-
-    if (cache_cap > 0) {
-        do {
-            ptr = next_node(key, (Node *)ptr);
-        } while (!is_file_offset(ptr));
-    }
-
-    do {
-        read_node(ptr, node, db_handler, NULL);
-        ptr = next_node(key, node);
-    } while (node->type != LEAF);
-
-    
-    update_value(ptr, val, db_handler);
-}
-
-void read_modify_write(key__t key, val__t val, int db_handler) {
-    ptr__t ptr = cache_cap > 0 ? (ptr__t)(&cache[0]) : encode(0);
-    Node *node;
-
-    if (posix_memalign((void **)&node, 512, sizeof(Node))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
-
-    if (cache_cap > 0) {
-        do {
-            ptr = next_node(key, (Node *)ptr);
-        } while (!is_file_offset(ptr));
-    }
-
-    do {
-        read_node(ptr, node, db_handler, NULL);
-        ptr = next_node(key, node);
-    } while (node->type != LEAF);
-
-    
-    read_modify_write_value(ptr, val, db_handler);
 }
 
 void print_node(ptr__t ptr, Node *node) {
@@ -546,6 +511,9 @@ Request *init_request(key__t key, WorkerArg *warg) {
     // let the BPF function know the key
     memcpy(req->vec.iov_base, &key, sizeof(key));
 
+    req->scratch_buffer = (uint8_t *) aligned_alloc(PAGE_SIZE, PAGE_SIZE);
+    BUG_ON(req->scratch_buffer == NULL);
+
     req->key = key;
     req->ofs = 0;
     req->warg = warg;
@@ -555,166 +523,45 @@ Request *init_request(key__t key, WorkerArg *warg) {
     return req;
 }
 
-void read_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring) {
-    struct iovec *vec = malloc(sizeof(struct iovec));
-    vec->iov_base = node;
-    vec->iov_len = sizeof(Node);
+void pread_node(ptr__t ptr, Node *node, int db_handler) {
+    _Static_assert(sizeof(Node) == 512);
 
-    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    io_uring_prep_readv(sqe, db_handler, vec, 1, decode(ptr));
-    io_uring_sqe_set_data(sqe, vec);
-    io_uring_submit(ring);
+    int ret;
+    ret = pread(db_handler, node, sizeof(Node), decode(ptr));
+    BUG_ON(ret != sizeof(Node));
     
     // Debug output
     // print_node(ptr, node);
 }
 
-void read_log(ptr__t ptr, Log *log, int db_handler, struct io_uring *ring) {
-    struct iovec *vec = malloc(sizeof(struct iovec));
-    vec->iov_base = log;
-    vec->iov_len = sizeof(Node);
+void pread_log(ptr__t ptr, Log *log, int db_handler) {
+    _Static_assert(sizeof(Log) == 512);
 
-    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    io_uring_prep_readv(sqe, db_handler, vec, 1, decode(ptr));
-    io_uring_sqe_set_data(sqe, vec);
-    io_uring_submit(ring);
+    int ret;
+    ret = pread(db_handler, log, sizeof(Log), decode(ptr));
+    BUG_ON(ret != sizeof(Log));
 
     // Debug output
     // print_log(ptr, log);
 }
 
-void read_complete(struct io_uring *ring, int is_node) {
-    struct io_uring_cqe *cqe;
-    int ret = io_uring_wait_cqe(ring, &cqe);
-    if (ret < 0) {
-        perror("io_uring_wait_cqe");
-        return;
-    }
-    if (cqe->res < 0) {
-        fprintf(stderr, "[read_complete] Error in async operation: %s\n", strerror(-cqe->res));
-        return;
-    }
+void pwrite_node(ptr__t ptr, Node *node, int db_handler) {
+    _Static_assert(sizeof(Node) == 512);
 
-    struct iovec *vec = io_uring_cqe_get_data(cqe);
-    // if (is_node) {
-    //     print_node(0, (Node *)vec->iov_base);
-    // } else {
-    //     print_log(0, (Log *)vec->iov_base);
-    // }
-    free(vec);
-    io_uring_cqe_seen(ring, cqe);
+    int ret;
+    ret = pwrite(db_handler, node, sizeof(Node), decode(ptr));
+    BUG_ON(ret != sizeof(Node));
 }
 
-void write_node(ptr__t ptr, Node *node, int db_handler, struct io_uring *ring) {
-    struct iovec *vec = malloc(sizeof(struct iovec));
-    vec->iov_base = node;
-    vec->iov_len = sizeof(Node);
+void pwrite_log(ptr__t ptr, Log *log, int db_handler) {
+    _Static_assert(sizeof(Log) == 512);
 
-    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    io_uring_prep_writev(sqe, db_handler, vec, 1, decode(ptr));
-    io_uring_sqe_set_data(sqe, vec);
-    io_uring_submit(ring);
-}
-
-void write_log(ptr__t ptr, Log *log, int db_handler, struct io_uring *ring) {
-    struct iovec *vec = malloc(sizeof(struct iovec));
-    vec->iov_base = log;
-    vec->iov_len = sizeof(Log);
-
-    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    io_uring_prep_writev(sqe, db_handler, vec, 1, decode(ptr));
-    io_uring_sqe_set_data(sqe, vec);
-    io_uring_submit(ring);
+    int ret;
+    ret = pwrite(db_handler, log, sizeof(Log), decode(ptr));
+    BUG_ON(ret != sizeof(Log));
 
     // Debug output
     // print_log(ptr, log);
-}
-
-void write_complete(struct io_uring *ring) {
-    struct io_uring_cqe *cqe;
-    int ret = io_uring_wait_cqe(ring, &cqe);
-    if (ret < 0) {
-        perror("io_uring_wait_cqe");
-        return;
-    }
-    if (cqe->res < 0) {
-        fprintf(stderr, "[write_complete] Error in async operation: %s\n", strerror(-cqe->res));
-        return;
-    }
-
-    struct iovec *vec = io_uring_cqe_get_data(cqe);
-    free(vec->iov_base);
-    free(vec);
-    io_uring_cqe_seen(ring, cqe);
-}
-
-int retrieve_value(ptr__t ptr, val__t val, WorkerArg *r) {
-    Log *log;
-    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
-
-    ptr__t mask = BLK_SIZE - 1;
-    ptr__t base = ptr & (~mask);
-    ptr__t offset = ptr & mask;
-
-    read_log(base, log, r->db_handler, &(r->local_ring));
-    read_complete(&(r->local_ring), 0);
-    memcpy(val, log->val[offset / VAL_SIZE], VAL_SIZE);
-    free(log);
-
-    return 0;
-}
-
-void update_value(ptr__t ptr, val__t val, int db_handler) {
-    Log *log;
-    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
-
-    ptr__t mask = BLK_SIZE - 1;
-    ptr__t base = ptr & (~mask);
-    ptr__t offset = ptr & mask;
-    size_t log_idx = decode(base) / BLK_SIZE - total_node;
-
-    read_log(base, log, db_handler, NULL);
-    memcpy(log->val[offset / VAL_SIZE], val, VAL_SIZE);
-
-    int rc = 0;
-    if ((rc = pthread_mutex_lock(&val_lock[log_idx])) != 0) {
-        printf("lock error %d %lu\n", rc, log_idx);
-    }
-
-    write_log(base, log, db_handler, NULL);
-
-    pthread_mutex_unlock(&val_lock[log_idx]);
-}
-
-void read_modify_write_value(ptr__t ptr, val__t val, int db_handler) {
-    Log *log;
-    if (posix_memalign((void **)&log, 512, sizeof(Log))) {
-        perror("posix_memalign failed");
-        exit(1);
-    }
-
-    ptr__t mask = BLK_SIZE - 1;
-    ptr__t base = ptr & (~mask);
-    ptr__t offset = ptr & mask;
-    size_t log_idx = decode(base) / BLK_SIZE - total_node;
-
-    int rc = 0;
-    if ((rc = pthread_mutex_lock(&val_lock[log_idx])) != 0) {
-        printf("lock error %d %lu\n", rc, log_idx);
-    }
-
-    read_log(base, log, db_handler, NULL);
-    size_t num = atoi(log->val[offset / VAL_SIZE]);
-    sprintf(log->val[offset / VAL_SIZE], "%63lu", num / 2);
-    write_log(base, log, db_handler, NULL);
-
-    pthread_mutex_unlock(&val_lock[log_idx]);
 }
 
 ptr__t next_node(key__t key, Node *node) {
@@ -725,6 +572,23 @@ ptr__t next_node(key__t key, Node *node) {
         }
     }
     return node->ptr[node->num - 1];
+}
+
+int bpf(int cmd, union bpf_attr *attr, unsigned int size) {
+    return syscall(__NR_bpf, cmd, attr, size);
+}
+
+int load_bpf_program(char *path) {
+    struct bpf_object *obj;
+    int ret, progfd;
+
+    ret = bpf_prog_load(path, BPF_PROG_TYPE_XRP, &obj, &progfd);
+    if (ret) {
+        printf("Failed to load bpf program\n");
+        exit(1);
+    }
+
+    return progfd;
 }
 
 int prompt_help() {
@@ -749,6 +613,7 @@ int main(int argc, char *argv[]) {
         rmw_ratio = atoi(argv[6]);
         cache_layer = atoi(argv[7]);
         req_per_sec = atoi(argv[8]);
+        BUG_ON(read_ratio != 100);
         return run();
     } else {
         return prompt_help();
