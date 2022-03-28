@@ -55,7 +55,7 @@ struct ScatterGatherQuery {
 };
 
 // Database-level information
-#define DB_PATH "/dev/treenvme0"
+#define DB_PATH "/dev/nvme0n1"
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
