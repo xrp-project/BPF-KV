@@ -45,6 +45,8 @@ typedef struct _Log {
     val__t val[LOG_CAPACITY];
 } Log;
 
+#define SG_KEYS 32
+
 struct ScatterGatherQuery {
     ptr__t root_pointer;
     ptr__t value_ptr;

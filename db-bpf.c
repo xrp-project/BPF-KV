@@ -6,7 +6,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
-#include <linux/treenvme_ioctl.h>
 
 void init_ring(struct submitter *s) {
     int ret;
