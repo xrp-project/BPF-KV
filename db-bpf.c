@@ -436,7 +436,7 @@ void traverse_complete(struct submitter *s) {
     // if (req->is_value) {
         val__t val;
         Log *log = (Log *)req->vec.iov_base;
-        memcpy(val, sgq->values, VAL_SIZE);
+        memcpy(val, sgq->values[0].value, VAL_SIZE);
         if (req->key != atoi(val)) {
             printf("Errror! key: %lu val: %s\n", req->key, val);
         }            

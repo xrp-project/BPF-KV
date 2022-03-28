@@ -47,6 +47,11 @@ typedef struct _Log {
 
 #define SG_KEYS 32
 
+struct MaybeValue {
+    char found;
+    val__t value;
+};
+
 struct ScatterGatherQuery {
     ptr__t root_pointer;
     ptr__t value_ptr;
@@ -54,7 +59,7 @@ struct ScatterGatherQuery {
     int current_index;
     int n_keys;
     key__t keys[SG_KEYS];
-    val__t values[SG_KEYS];
+    struct MaybeValue values[SG_KEYS];
 };
 
 // Database-level information
