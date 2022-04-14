@@ -209,41 +209,36 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 }
 
 int cmp(const void *a, const void *b) {
-    long t = (long)(*(size_t *)a - *(size_t *)b);
-    if (t < 0) {
-        return -1;
-    } else if (t == 0){
+    size_t val_a = *((const size_t *) a);
+    size_t val_b = *((const size_t *) b);
+    if (val_a == val_b) {
         return 0;
+    } else if (val_a < val_b) {
+        return -1;
     } else {
         return 1;
     }
 }
 
-void print_tail_latency(WorkerArg* args, size_t request_num) {
-    size_t *histogram = args[0].histogram;
-    qsort(histogram, request_num, sizeof(size_t), cmp);
+static double get_percentile(size_t *latency_arr, size_t request_num, double percentile)
+{
+    double exact_index = ((double) (request_num - 1)) * percentile;
+    double left_index = floor(exact_index);
+    double right_index = ceil(exact_index);
 
-    size_t sum95 = 0, sum99 = 0, sum999 = 0;
-    size_t idx95 = request_num * 0.95, idx99 = request_num * 0.99, idx999 = request_num * 0.999;
-    // printf("idx95: %ld idx99: %ld idx999: %ld\n", idx95, idx99, idx999);
-    for (size_t i = 1; i < request_num; i++) {
-        if (histogram[i] < histogram[i-1]) {
-            printf("sort wrong! %lu: %lu %lu: %lu\n", i, histogram[i], i-1, histogram[i-1]);
-            // return;
-        }
-        // printf("%ld ", histogram[i]);
-    }
-    // printf("\n");
+    double left_value = (double) latency_arr[(size_t) left_index];
+    double right_value = (double) latency_arr[(size_t) right_index];
+    double value = left_value + (exact_index - left_index) * (right_value - left_value);
+    return value;
+}
 
-    for (size_t i = idx95; i < request_num; i++) {
-        sum95  += histogram[i];
-        sum99  += i >= idx99  ? histogram[i] : 0;
-        sum999 += i >= idx999 ? histogram[i] : 0;
-    }
+static void print_tail_latency(WorkerArg* args, size_t request_num) {
+    size_t *latency_arr = args[0].histogram;
+    qsort(latency_arr, request_num, sizeof(size_t), cmp);
 
-    printf("95%%   latency: %f us\n", (double)sum95  / (request_num - idx95)  / 1000);
-    printf("99%%   latency: %f us\n", (double)sum99  / (request_num - idx99)  / 1000);
-    printf("99.9%% latency: %f us\n", (double)sum999 / (request_num - idx999) / 1000);
+    printf("95%%   latency: %f us\n", get_percentile(latency_arr, request_num, 0.95) / 1000);
+    printf("99%%   latency: %f us\n", get_percentile(latency_arr, request_num, 0.99) / 1000);
+    printf("99.9%% latency: %f us\n", get_percentile(latency_arr, request_num, 0.999) / 1000);
 }
 
 int run() {
