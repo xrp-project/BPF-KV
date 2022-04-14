@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <time.h>
+#include <math.h>
 #include "uring.h"
 
 #include <linux/bpf.h>
