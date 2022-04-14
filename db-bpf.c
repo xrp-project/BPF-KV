@@ -232,7 +232,7 @@ static double get_percentile(size_t *latency_arr, size_t request_num, double per
     return value;
 }
 
-static void print_tail_latency(WorkerArg* args, size_t request_num) {
+void print_tail_latency(WorkerArg* args, size_t request_num) {
     size_t *latency_arr = args[0].histogram;
     qsort(latency_arr, request_num, sizeof(size_t), cmp);
 
