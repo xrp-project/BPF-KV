@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <liburing.h>
+#include <math.h>
 
 // Data-level information
 typedef unsigned long meta__t;
