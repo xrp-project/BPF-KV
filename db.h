@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <time.h>
+#include <math.h>
 #include "spdk/stdinc.h"
 #include "spdk/nvme.h"
 #include "spdk/vmd.h"
