@@ -146,7 +146,15 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
 }
 
 int cmp(const void *a, const void *b) {
-    return *(size_t *)a - *(size_t *)b;
+    size_t val_a = *((const size_t *) a);
+    size_t val_b = *((const size_t *) b);
+    if (val_a == val_b) {
+        return 0;
+    } else if (val_a < val_b) {
+        return -1;
+    } else {
+        return 1;
+    }
 }
 
 static double get_tail_latency(WorkerArg* args, size_t request_num) {
