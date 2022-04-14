@@ -133,6 +133,7 @@ int load(size_t layer_num) {
             pwrite_node(encode(idx * BLK_SIZE), node, db);
             start_key += extent;
             idx++;
+            free(node);
 
             // Sanity check
             // if (posix_memalign((void **)&tmp, 512, sizeof(Node))) {
@@ -160,6 +161,7 @@ int load(size_t layer_num) {
         }
         pwrite_log(encode(idx * BLK_SIZE), log, db);
         idx++;
+        free(log);
 
         // Sanity check
         // if (posix_memalign((void **)&tmp, 512, sizeof(Log))) {
