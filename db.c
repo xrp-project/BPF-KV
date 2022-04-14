@@ -655,7 +655,8 @@ void parse_args(int argc, char *argv[]) {
 
 bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	           struct spdk_nvme_ctrlr_opts *opts) {
-	return strcmp(trid->traddr, "0000:01:00.0") == 0;
+	// Bind the first available SPDK NVMe device
+	return true;
 }
 
 void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
