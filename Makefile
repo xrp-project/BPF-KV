@@ -37,4 +37,6 @@ C_SRCS := db.c
 
 CFLAGS = -g -O0
 
+LDLIBS = -lm
+
 include $(SPDK_ROOT_DIR)/mk/nvme.libtest.mk
