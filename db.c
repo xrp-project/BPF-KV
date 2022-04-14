@@ -222,7 +222,7 @@ static double get_percentile(long *latency_arr, size_t request_num, double perce
 }
 
 static void print_tail_latency(WorkerArg* args, size_t request_num) {
-    long *latency_arr = args[0].latency_arr;
+    long *latency_arr = args[0].histogram;
     qsort(latency_arr, request_num, sizeof(long), cmp);
 
     printf("95%%   latency: %f us\n", get_percentile(latency_arr, request_num, 0.95) / 1000);
