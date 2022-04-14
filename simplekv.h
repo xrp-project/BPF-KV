@@ -32,6 +32,7 @@ typedef struct {
     size_t timer;
     int use_xrp;
     int bpf_fd;
+    size_t *latency_arr;
 } WorkerArg;
 
 int get_handler(char *db_path, int flag);

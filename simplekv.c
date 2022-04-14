@@ -117,6 +117,9 @@ int terminate(void) {
 }
 
 void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path, int use_xrp, int bpf_fd) {
+    size_t offset = 0;
+    args[0].latency_arr = (size_t *) malloc(total_op_count * sizeof(size_t));
+    BUG_ON(args[0].latency_arr == NULL);
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
@@ -124,6 +127,8 @@ void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path, i
         args[i].timer = 0;
         args[i].use_xrp = use_xrp;
         args[i].bpf_fd = bpf_fd;
+        args[i].latency_arr = args[0].latency_arr + offset;
+        offset += args[i].op_count;
     }
 }
 
@@ -138,6 +143,25 @@ void terminate_workers(pthread_t *tids, WorkerArg *args) {
         pthread_join(tids[i], NULL);
         close(args[i].db_handler);
     }
+}
+
+int cmp(const void *a, const void *b) {
+    return *(size_t *)a - *(size_t *)b;
+}
+
+static double get_tail_latency(WorkerArg* args, size_t request_num) {
+    size_t *latency_arr = args[0].latency_arr;
+    qsort(latency_arr, request_num, sizeof(size_t), cmp);
+
+    /* Get 99-th percentile */
+    double exact_index = ((double) (request_num - 1)) * 0.99L;
+    double left_index = floor(exact_index);
+    double right_index = ceil(exact_index);
+
+    double left_value = (double) latency_arr[(size_t) left_index];
+    double right_value = (double) latency_arr[(size_t) right_index];
+    double value = left_value + (exact_index - left_index) * (right_value - left_value);
+    return value;
 }
 
 int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp,
@@ -166,8 +190,10 @@ int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, 
     for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
     long run_time = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
 
-    printf("Average throughput: %f op/s latency: %f usec\n",
-            (double)request_num / run_time * 1000000000, (double)total_latency / request_num / 1000);
+    printf("Average throughput: %f op/s, avg latency: %f usec, 99-th tail latency: %f usec\n",
+            (double)request_num / run_time * 1000000000, (double)total_latency / request_num / 1000,
+            get_tail_latency(args, request_num) / 1000);
+    free(args[0].latency_arr);
 
     return terminate();
 }
@@ -203,7 +229,9 @@ void *subtask(void *args) {
         }
 
         clock_gettime(CLOCK_REALTIME, &tpe);
-        r->timer += 1000000000 * (tpe.tv_sec - tps.tv_sec) + (tpe.tv_nsec - tps.tv_nsec);
+        size_t latency = 1000000000 * (tpe.tv_sec - tps.tv_sec) + (tpe.tv_nsec - tps.tv_nsec);
+        r->timer += latency;
+        r->latency_arr[i] = latency;
 
         /* Parse and check value from db */
         char buf[sizeof(val__t) + 1];

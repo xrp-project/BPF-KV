@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <alloca.h>
 #include <stdint.h>
+#include <math.h>
 
 #include <linux/bpf.h>
 #include <linux/lirc.h>
@@ -60,5 +61,11 @@ int compare_nodes(Node *x, Node *y);
 long calculate_max_key(unsigned int layers);
 
 int load_bpf_program(char *path);
+
+#define BUG_ON(condition)   \
+    do {                    \
+        if (condition)      \
+            abort();        \
+    } while (0)
 
 #endif /* HELPERS_H */

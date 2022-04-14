@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -D_GNU_SOURCE -Wunused
-LDLIBS = -pthread -lbpf
+LDLIBS = -pthread -lbpf -lm
 
 
 all: simplekv bpf
