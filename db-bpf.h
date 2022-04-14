@@ -13,6 +13,7 @@
 #include <linux/input.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#include <fcntl.h>
 
 // Data-level information
 typedef unsigned long meta__t;
