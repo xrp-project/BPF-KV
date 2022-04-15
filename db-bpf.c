@@ -305,7 +305,7 @@ void *subtask(void *args) {
     while (r->issued < r->op_count) {
         // Submit a batch of requests
         size_t num_req_submitted = 0;
-        while (!early_than(&now, &deadline) && (r->issued - r->finished < QUEUE_DEPTH)) {
+        while (!early_than(&now, &deadline) && (r->issued < r->op_count) && (r->issued - r->finished < QUEUE_DEPTH)) {
             // Running late. Submit one request.
             key__t key = rand() % max_key;
             val__t val;
