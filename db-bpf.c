@@ -305,12 +305,8 @@ void *subtask(void *args) {
     while (r->issued < r->op_count) {
         // Submit a batch of requests
         size_t num_req_submitted = 0;
-        while (!early_than(&now, &deadline)) {
+        while (!early_than(&now, &deadline) && (r->issued - r->finished < QUEUE_DEPTH)) {
             // Running late. Submit one request.
-            while (r->issued - r->finished >= QUEUE_DEPTH) {
-                traverse_complete(&r->local_ring);
-            }
-
             key__t key = rand() % max_key;
             val__t val;
 
@@ -326,6 +322,9 @@ void *subtask(void *args) {
             int ret;
             ret = io_uring_enter(r->local_ring.ring_fd, num_req_submitted, 0, IORING_ENTER_GETEVENTS);
             BUG_ON(ret != num_req_submitted);
+        }
+        while (r->issued - r->finished >= QUEUE_DEPTH / 2) {
+            traverse_complete(&r->local_ring);
         }
 
         clock_gettime(CLOCK_REALTIME, &now);
