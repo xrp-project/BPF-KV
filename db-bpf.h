@@ -69,7 +69,7 @@ struct ScatterGatherQuery {
 #define LOAD_MODE 0
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
-#define QUEUE_DEPTH 256
+#define QUEUE_DEPTH 512
 
 size_t layer_cnt;
 size_t cache_layer = 3;
