@@ -7,6 +7,7 @@
 #include <time.h>
 #include <liburing.h>
 #include <math.h>
+#include <stdlib.h>
 
 // Data-level information
 typedef unsigned long meta__t;
