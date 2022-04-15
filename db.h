@@ -80,6 +80,11 @@ typedef struct {
     WorkerArg *warg;
 } Request;
 
+static inline void BUG_ON(int cond) {
+    if (cond)
+        abort();
+}
+
 int get_handler(int flag);
 
 ptr__t is_file_offset(ptr__t ptr) {

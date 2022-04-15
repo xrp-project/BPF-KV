@@ -93,6 +93,25 @@ int terminate() {
     return 0;
 }
 
+static void pwrite_node(ptr__t ptr, Node *node, int db_handler) {
+    _Static_assert(sizeof(Node) == 512);
+
+    int ret;
+    ret = pwrite(db_handler, node, sizeof(Node), decode(ptr));
+    BUG_ON(ret != sizeof(Node));
+}
+
+static void pwrite_log(ptr__t ptr, Log *log, int db_handler) {
+    _Static_assert(sizeof(Log) == 512);
+
+    int ret;
+    ret = pwrite(db_handler, log, sizeof(Log), decode(ptr));
+    BUG_ON(ret != sizeof(Log));
+
+    // Debug output
+    // print_log(ptr, log);
+}
+
 int load(size_t layer_num) {
     printf("Load the database of %lu layers\n", layer_num);
     initialize(layer_num, LOAD_MODE);
@@ -118,10 +137,10 @@ int load(size_t layer_num) {
                               encode(total_node * BLK_SIZE + (next_pos - total_node) * VAL_SIZE);
                 next_pos++;
             }
-            write_node(encode(idx * BLK_SIZE), node, db, &global_ring);
-            write_complete(&global_ring);
+            pwrite_node(encode(idx * BLK_SIZE), node, db);
             start_key += extent;
             idx++;
+            free(node);
 
             // Sanity check
             // if (posix_memalign((void **)&tmp, 512, sizeof(Node))) {
@@ -148,9 +167,9 @@ int load(size_t layer_num) {
         for (size_t j = 0; j < LOG_CAPACITY; j++) {
             sprintf(log->val[j], "%63lu", i + j);
         }
-        write_log(encode(idx * BLK_SIZE), log, db, &global_ring);
-        write_complete(&global_ring);
+        pwrite_log(encode(idx * BLK_SIZE), log, db);
         idx++;
+        free(log);
 
         // Sanity check
         // if (posix_memalign((void **)&tmp, 512, sizeof(Log))) {
