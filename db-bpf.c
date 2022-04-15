@@ -429,7 +429,7 @@ void traverse(ptr__t ptr, Request *req) {
 }
 
 void traverse_complete(struct submitter *s) {
-    if ((*(s->cq_ring.head)) == (*(s->cq_ring.tail))) {
+    while ((*(s->cq_ring.head)) == (*(s->cq_ring.tail))) {
         int ret;
         ret = io_uring_enter(s->ring_fd, /* to_submit */ 0, /* min_complete */ 1, IORING_ENTER_GETEVENTS);
         BUG_ON(ret != 0);
