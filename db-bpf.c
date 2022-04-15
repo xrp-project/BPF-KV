@@ -328,6 +328,12 @@ void *subtask(void *args) {
         }
 
         clock_gettime(CLOCK_REALTIME, &now);
+        while (early_than(&now, &deadline) && r->issued - r->finished > 0) {
+            traverse_complete(&r->local_ring);
+            clock_gettime(CLOCK_REALTIME, &now);
+        }
+
+        clock_gettime(CLOCK_REALTIME, &now);
         if (early_than(&now, &deadline)) {
             pthread_mutex_lock(&mutex);
             pthread_cond_timedwait(&cond, &mutex, &deadline);
