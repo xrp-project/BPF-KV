@@ -157,12 +157,9 @@ int cmp(const void *a, const void *b) {
     }
 }
 
-static double get_tail_latency(WorkerArg* args, size_t request_num) {
-    size_t *latency_arr = args[0].latency_arr;
-    qsort(latency_arr, request_num, sizeof(size_t), cmp);
-
-    /* Get 99-th percentile */
-    double exact_index = ((double) (request_num - 1)) * 0.99L;
+static double get_percentile(size_t *latency_arr, size_t request_num, double percentile)
+{
+    double exact_index = ((double) (request_num - 1)) * percentile;
     double left_index = floor(exact_index);
     double right_index = ceil(exact_index);
 
@@ -170,6 +167,15 @@ static double get_tail_latency(WorkerArg* args, size_t request_num) {
     double right_value = (double) latency_arr[(size_t) right_index];
     double value = left_value + (exact_index - left_index) * (right_value - left_value);
     return value;
+}
+
+static void print_tail_latency(WorkerArg* args, size_t request_num) {
+    size_t *latency_arr = args[0].histogram;
+    qsort(latency_arr, request_num, sizeof(size_t), cmp);
+
+    printf("95%%   latency: %f us\n", get_percentile(latency_arr, request_num, 0.95) / 1000);
+    printf("99%%   latency: %f us\n", get_percentile(latency_arr, request_num, 0.99) / 1000);
+    printf("99.9%% latency: %f us\n", get_percentile(latency_arr, request_num, 0.999) / 1000);
 }
 
 int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp,
@@ -198,9 +204,9 @@ int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, 
     for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
     long run_time = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
 
-    printf("Average throughput: %f op/s, avg latency: %f usec, 99-th tail latency: %f usec\n",
-            (double)request_num / run_time * 1000000000, (double)total_latency / request_num / 1000,
-            get_tail_latency(args, request_num) / 1000);
+    printf("Average throughput: %f op/s latency: %f usec\n", 
+            (double)request_num / run_time * 1000000000, (double)total_latency / request_num / 1000);
+    print_tail_latency(args, request_num);
     free(args[0].latency_arr);
 
     return terminate();
