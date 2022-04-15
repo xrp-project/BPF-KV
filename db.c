@@ -17,7 +17,7 @@ int get_handler(int flag) {
 
 void initialize(size_t layer_num, int mode) {
     if (mode == LOAD_MODE) {
-        db = get_handler(O_CREAT|O_TRUNC|O_RDWR);
+        db = get_handler(O_CREAT|O_TRUNC|O_WRONLY);
     } else {
         db = get_handler(O_RDWR|O_DIRECT);
     }
