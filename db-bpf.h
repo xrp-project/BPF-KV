@@ -70,6 +70,9 @@ struct ScatterGatherQuery {
 #define RUN_MODE 1
 #define FILE_MASK ((ptr__t)1 << 63)
 #define QUEUE_DEPTH 512
+#define MIN_BATCH_SIZE 64
+
+#define CLOCK_TYPE CLOCK_MONOTONIC
 
 size_t layer_cnt;
 size_t cache_layer = 3;
@@ -100,12 +103,11 @@ typedef struct {
 
 typedef struct {
     key__t key;
-    ptr__t ofs;
     struct iovec vec;
     uint8_t *scratch_buffer;
-    bool is_value;
     struct timespec start;
     WorkerArg *warg;
+    int index;
 } Request;
 
 int get_handler(int flag);
@@ -138,8 +140,6 @@ void build_cache(size_t layer_num);
 
 void *print_status(void *args);
 
-int get(key__t key, val__t val, WorkerArg *r);
-
 ptr__t next_node(key__t key, Node *node);
 
 Request *init_request(key__t key, WorkerArg *warg);
@@ -150,9 +150,7 @@ void pread_log(ptr__t ptr, Log *log, int db_handler);
 
 void traverse(ptr__t ptr, Request *req);
 
-void traverse_complete(struct submitter *s);
-
-void wait_for_completion(struct submitter *s, size_t *counter, size_t target);
+int traverse_complete(struct submitter *s);
 
 void pwrite_node(ptr__t ptr, Node *node, int db_handler);
 
