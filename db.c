@@ -275,6 +275,15 @@ int run(size_t layer_num, size_t request_num, size_t thread_num) {
 
     print_tail_latency(args, request_num);
 
+    size_t num_extreme_latency = 0;
+    for (size_t i = 0; i < request_num; ++i) {
+        if (args[0].histogram[i] >= 1000000) {
+            ++num_extreme_latency;
+        }
+    }
+    printf("Percentage of requests with latency >= 1ms: %.4f%%\n",
+           (100.0 * (double) num_extreme_latency) / ((double) request_num));
+
     return terminate();
 }
 
