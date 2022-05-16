@@ -443,6 +443,15 @@ int run() {
             (double)request_cnt / run_time * 1000000000, (double)total_latency / request_cnt / 1000);
     print_tail_latency(args, request_cnt);
 
+    size_t num_extreme_latency = 0;
+    for (size_t i = 0; i < request_cnt; ++i) {
+        if (args[0].histogram[i] >= 1000000) {
+            ++num_extreme_latency;
+        }
+    }
+    printf("Percentage of requests with latency >= 1ms: %.4f%%\n",
+           (100.0 * (double) num_extreme_latency) / ((double) request_cnt));
+
     return terminate();
 }
 
