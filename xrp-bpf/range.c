@@ -49,6 +49,7 @@ static __inline unsigned int process_leaf(struct bpf_xrp *context, struct RangeQ
             if (curr_key >= first_key) {
                 /* Set up the next resubmit to read the value */
                 context->next_addr[0] = value_base(decode(node->ptr[*i & KEY_MASK]));
+                context->fd_arr[0] = context->cur_fd;
                 context->size[0] = BLK_SIZE;
 
                 key__t key = node->key[*i & KEY_MASK];
@@ -102,6 +103,7 @@ static __inline unsigned int process_leaf(struct bpf_xrp *context, struct RangeQ
         query->_state = RNG_READ_NODE;
         query->_node_key_ix = 0;
         context->next_addr[0] = node->next;
+        context->fd_arr[0] = context->cur_fd;
         context->size[0] = BLK_SIZE;
         return 0;
     }
@@ -138,6 +140,7 @@ static __inline unsigned int traverse_index(struct bpf_xrp *context, struct Rang
 
     /* Grab the next node in the traversal */
     context->next_addr[0] = decode(nxt_node(query->range_begin, node));
+    context->fd_arr[0] = context->cur_fd;
     context->size[0] = BLK_SIZE;
     return 0;
 }
