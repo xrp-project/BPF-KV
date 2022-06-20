@@ -37,7 +37,6 @@ static __inline void print_query(struct Query *q) {
 static __inline void print_node(Node *node) {
     dbg_print("struct Node {\n");
 
-    dbg_print("\tnum = %ld\n", node->num);
     dbg_print("\ttype = %ld\n", node->type);
     dbg_print("\tkey[0] = %ld\n", node->key[0]);
     dbg_print("\tkey[30] = %ld\n", node->key[NODE_CAPACITY - 1]);
@@ -49,7 +48,5 @@ static __inline void print_node(Node *node) {
 #else
 #define dbg_print(...)
 #endif
-
-
 
 #endif

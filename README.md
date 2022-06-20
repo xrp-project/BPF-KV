@@ -4,17 +4,18 @@ query operations.  SimpleKV supports low-latency IO via the XRP BPF interface
 and can also run using user-space IO (`pread()`) on mainline (and XRP
 compatible) kernels.
 
-For usage instructions run `./simplekv --help` after compiling.
+For usage instructions run `LD_PRELOAD="/usr/lib64/libbpf.so.0" ./simplekv --help` after compiling.
 
 
 # Building
-SimpleKV is built using the provided Makefile. Compiling the simplekv binary
+SimpleKV is built using the provided Makefile. Compiling the `simplekv` binary
 is as simple as running `make`. To perform IO with XRP via the `--use-xrp`
 flag the corresponding BPF programs in the `xrp-bpf` directory must be
 compiled.
 
 These BPF programs require [libbpf](https://github.com/libbpf/libbpf) and an XRP compatible kernel.
 Before compiling, install libbpf via your distribution's package manager or source.
+Compiling these programs also requires installing `clang` and `llvm`.
 
 To compile on an XRP compatible kernel with libbpf, run:
 ```
@@ -25,6 +26,9 @@ Alternatively, you can compile simplekv without the BPF programs and use userspa
 ```
 make simplekv
 ```
+
+For the below commands, we assume your libbpf installation is located in the
+default directory specified by libbpf: `/usr/lib64` (for 64-bit architectures).
 
 # Running
 
@@ -45,38 +49,27 @@ space.
 
 To create a 6-layer database file:
 ```
-./simplekv 6-layer-db 6 create
+LD_PRELOAD="/usr/lib64/libbpf.so.0" ./simplekv 6-layer-db 6 create
 ```
 
 ## Running the benchmark
 SimpleKV supports get queries and range queries, both of which can be run with various options.
 Usage and option docs can be reviewed by passing the `--help` flag to either command:
 ```
-./simplekv 6-layer-db 6 get --help
-./simplekv 6-layer-db 6 range --help
+LD_PRELOAD="/usr/lib64/libbpf.so.0" ./simplekv 6-layer-db 6 get --help
+LD_PRELOAD="/usr/lib64/libbpf.so.0" ./simplekv 6-layer-db 6 range --help
 ```
 
 ### Using XRP
-Before running with XRP you must load the corresponding BPF function using the
-`xrp_loader` program built via the default make target. Note that GET and RANGE operations
-use separate BPF programs, so be sure to load the correct one.
-
-For GET operations:
-```
-LD_PRELOAD="/usr/lib64/libbpf.so.0" ./xrp_loader xrp-bpf/get_op.o
-```
-
-For RANGE operations:
-```
-LD_PRELOAD="/usr/lib64/libbpf.so.0" ./xrp_loader xrp-bpf/range_op.o
-```
 
 NOTE: You may need to change `LD_PRELOAD` depending on where `libbpf.so.0` is located on your machine.
 
 With the BPF program loaded, you can run a basic GET benchmark as follows:
 ```
-./simplekv 6-layer-db 6 get --requests=100000 --use-xrp
+sudo LD_PRELOAD="/usr/lib64/libbpf.so.0" ./simplekv 6-layer-db 6 get --requests=100000 --use-xrp
 ```
+
+Root access is required in order to load the bpf programs.
 
 ### CPU Configuration
 For consistent benchmark results you may need to disable CPU frequency scaling.
