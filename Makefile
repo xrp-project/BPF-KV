@@ -1,5 +1,14 @@
 CC = gcc
 CFLAGS = -Wall -D_GNU_SOURCE -Wunused
+
+ifeq ($(filter-out %64 %64be %64eb %64le %64el s390x, $(shell uname -m)),)
+	LIBDIR ?= /usr/lib64
+else
+	LIBDIR ?= /usr/lib
+endif
+
+LDFLAGS = -L$(LIBDIR)
+
 LDLIBS = -pthread -lbpf -lm
 
 

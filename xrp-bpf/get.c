@@ -54,6 +54,7 @@ static __inline void set_context_next_index(struct bpf_xrp *context, struct Scat
         context->next_addr[0] = query->root_pointer;
         context->size[0] = BLK_SIZE;
     }
+    context->fd_arr[0] = context->cur_fd;
 }
 
 /* Mask to prevent out of bounds memory access */
@@ -64,6 +65,8 @@ unsigned int oliver_agg_func(struct bpf_xrp *context) {
     struct ScatterGatherQuery *query = (struct ScatterGatherQuery*) context->scratch;
     Node *node = (Node *) context->data;
     int *curr_idx = &query->current_index;
+
+    dbg_print("fd: %d\n", context->cur_fd );
 
     /* Three cases:
      *
@@ -112,6 +115,7 @@ unsigned int oliver_agg_func(struct bpf_xrp *context) {
         ptr__t base = query->value_ptr & ~(BLK_SIZE - 1);
         context->next_addr[0] = base;
         context->size[0] = BLK_SIZE;
+        context->fd_arr[0] = context->cur_fd;
         return 0;
     }
 
@@ -119,5 +123,6 @@ unsigned int oliver_agg_func(struct bpf_xrp *context) {
     dbg_print("simplekv-bpf: case 3 - internal node\n");
     context->next_addr[0] = decode(nxt_node(query->keys[*curr_idx & EBPF_CONTEXT_MASK], node));
     context->size[0] = BLK_SIZE;
+    context->fd_arr[0] = context->cur_fd;
     return 0;
 }
