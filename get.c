@@ -10,11 +10,24 @@
 #include "simplekv.h"
 
 int bpf_get_fd = -1;
+int database_get_fd = -1;
 
-int load_xrp_get() {
+void load_xrp_get() {
     /* Load BPF program */
-    bpf_get_fd = -1;
     bpf_get_fd = load_bpf_program("xrp-bpf/get.o");
+}
+
+void load_bpfkv_database(char* file_name) {
+    /* Open the database */
+    int flags = O_RDONLY;
+    if (use_xrp) {
+        flags = flags | O_DIRECT;
+    }
+    database_get_fd = open(file_name, flags);
+    if (database_get_fd < 0) {
+        perror("failed to open database");
+        exit(1);
+    }
 }
 
 int do_get_cmd(int argc, char *argv[], struct ArgState *as) {
@@ -59,19 +72,15 @@ char *grab_value(char *file_name, unsigned long const key, int use_xrp, int bpf_
         perror("malloc");
         exit(1);
     }
+
+    if (database_get_fd == -1) {
+        load_bpfkv_database(file_name);
+    }
+
+    int db_fd = database_get_fd;
+
     /* Ensure we have a null at the end of the string */
     retval[sizeof(val__t)] = '\0';
-
-    /* Open the database */
-    int flags = O_RDONLY;
-    if (use_xrp) {
-        flags = flags | O_DIRECT;
-    }
-    int db_fd = open(file_name, flags);
-    if (db_fd < 0) {
-        perror("failed to open database");
-        exit(1);
-    }
 
     struct Query query = new_query(key);
     if (use_xrp) {
@@ -98,6 +107,45 @@ char *grab_value(char *file_name, unsigned long const key, int use_xrp, int bpf_
     }
     memcpy(retval, query.value, sizeof(query.value));
     close(db_fd);
+    return retval;
+}
+
+/**
+ * Traverses the b-tree to find a value, without freeing 
+ */
+char *server_grab_value(unsigned long key, int use_xrp, ptr__t index_offset) {
+    char *const retval = malloc(sizeof(val__t) + 1);
+    if (retval == NULL) {
+        perror("malloc");
+        exit(1);
+    }
+
+    /* Ensure we have a null at the end of the string */
+    retval[sizeof(val__t)] = '\0';
+
+    struct Query query = new_query(key);
+    if (use_xrp) {
+        long ret = lookup_bpf(database_get_fd, bpf_fd, &query, index_offset);
+
+        if (ret < 0) {
+            printf("reached leaf? %ld\n", query.state_flags);
+            fprintf(stderr, "read xrp failed with code %d\n", errno);
+            fprintf(stderr, "%s\n", strerror(errno));
+            exit(errno);
+        }
+        if (query.found == 0) {
+            printf("reached leaf? %ld\n", query.state_flags);
+            printf("result not found\n");
+            exit(1);
+        }
+    } else {
+        if (lookup_key_userspace(database_get_fd, &query, index_offset)) {
+            free(retval);
+            return NULL;
+        }
+        /* Traverse b+ tree index in db to find value and verify the key exists in leaf node */
+    }
+    memcpy(retval, query.value, sizeof(query.value));
     return retval;
 }
 

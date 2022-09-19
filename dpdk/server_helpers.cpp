@@ -51,7 +51,7 @@ std::string compute_response(struct request *req) {
     std::string resp;
 
     if (req->type == REQUEST_TYPE_GET) {
-        char *value = grab_value(table_name, req->key.c_str(), 1, bpf_fd, ROOT_NODE_OFFSET);
+        char *value = grab_value(stoi(req->key), 1, ROOT_NODE_OFFSET);
         
         if (value != nullptr)
             resp = std::string("VALUE ") + std::string(value) + std::string(" ") + req->id;

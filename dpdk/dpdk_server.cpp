@@ -63,12 +63,8 @@ void print_eth_ipv4_udp_pkt(struct rte_ether_hdr *eth_hdr, rte_ipv4_hdr *ip_hdr,
 /* Server */
 static void serve(void *arg) {
     uint16_t port;
-    WiredTigerUDPConfig config = *(WiredTigerUDPConfig *)arg;
-    const char *data_dir = config.wiredtiger_udp.data_dir.c_str();
-    const char *conn_config = config.wiredtiger_udp.conn_config.c_str();
-    const char *session_config = config.wiredtiger_udp.session_config.c_str();
-    const char *cursor_config = config.wiredtiger_udp.cursor_config.c_str();
-    const char *table_name = config.wiredtiger_udp.table_name.c_str();
+    BpfKvUDPConfig config = *(BpfKvUDPConfig *)arg;
+    const char *database_file = config.bpfkv_udp.database_file.c_str();
 
     printf("BPF-KV connection config: %s\n", conn_config);
     int ret = wiredtiger_open(data_dir, NULL, conn_config, &conn);
@@ -284,7 +280,12 @@ int main(int argc, char **argv) {
 
     // Parse config
     YAML::Node file = YAML::LoadFile(argv[1]);
-    WiredTigerUDPConfig config = WiredTigerUDPConfig::parse_yaml(file);
+    BpfKvUDPConfig config = BpfKvUDPConfig::parse_yaml(file);
+
+    // Load XRP program and database
+    load_xrp_get();
+    load_bpfkv_database(config.bpfkv_udp.database_file.c_str());
+
     serve(&config);
     // rte_eal_mp_wait_lcore();
 
