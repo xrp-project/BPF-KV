@@ -5,6 +5,8 @@
 
 struct ArgState;
 
+int load_xrp_get();
+
 int do_get_cmd(int argc, char *argv[], struct ArgState *as);
 
 int lookup_single_key(char *filename, long key, int use_xrp, int bpf_fd);

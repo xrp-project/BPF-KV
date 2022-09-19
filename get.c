@@ -9,6 +9,13 @@
 #include "helpers.h"
 #include "simplekv.h"
 
+int bpf_get_fd = -1;
+
+int load_xrp_get() {
+    /* Load BPF program */
+    bpf_get_fd = -1;
+    bpf_get_fd = load_bpf_program("xrp-bpf/get.o");
+}
 
 int do_get_cmd(int argc, char *argv[], struct ArgState *as) {
     struct GetArgs ga = {
@@ -18,20 +25,16 @@ int do_get_cmd(int argc, char *argv[], struct ArgState *as) {
     };
     parse_get_opts(argc, argv, &ga);
 
-    /* Load BPF program */
-    int bpf_fd = -1;
-    if (ga.xrp) {
-        bpf_fd = load_bpf_program("xrp-bpf/get.o");
+    if (ga.xrp && bpf_get_fd == -1) {
+        load_xrp_get()
     }
 
     if (ga.key_set) {
-        return lookup_single_key(as->filename, ga.key, ga.xrp, bpf_fd);
+        return lookup_single_key(as->filename, ga.key, ga.xrp, bpf_get_fd);
     }
 
-    return run(as->filename, as->layers, ga.requests, ga.threads, ga.xrp, bpf_fd, ga.cache_level);
+    return run(as->filename, as->layers, ga.requests, ga.threads, ga.xrp, bpf_get_fd, ga.cache_level);
 }
-
-
 
 int lookup_single_key(char *filename, long key, int use_xrp, int bpf_fd) {
     /* Lookup Single Key */
