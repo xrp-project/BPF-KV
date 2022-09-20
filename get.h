@@ -5,7 +5,9 @@
 
 struct ArgState;
 
-int load_xrp_get();
+void load_xrp_get();
+
+void load_bpfkv_database(char* file_name);
 
 int do_get_cmd(int argc, char *argv[], struct ArgState *as);
 

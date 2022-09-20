@@ -14,7 +14,11 @@
 #include <rte_net.h>
 #include <rte_udp.h>  // UDP headers
 
-#include "server_helpers.h"  // wiredtiger backend
+#include "server_helpers.h"  // BPF-KV backend
+
+extern "C" {
+  #include "get.h"
+}
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -65,12 +69,6 @@ static void serve(void *arg) {
     uint16_t port;
     BpfKvUDPConfig config = *(BpfKvUDPConfig *)arg;
     const char *database_file = config.bpfkv_udp.database_file.c_str();
-
-    printf("BPF-KV connection config: %s\n", conn_config);
-    int ret = wiredtiger_open(data_dir, NULL, conn_config, &conn);
-    if (ret < 0) {
-        error(EXIT_FAILURE, ret, "Failed to open wiredtiger database");
-    }
 
     printf("\nCore %u serving requests. [Ctrl+C to quit]\n", rte_lcore_id());
     for (;;) {
@@ -284,7 +282,8 @@ int main(int argc, char **argv) {
 
     // Load XRP program and database
     load_xrp_get();
-    load_bpfkv_database(config.bpfkv_udp.database_file.c_str());
+    char* db_filename = const_cast<char*>(config.bpfkv_udp.database_file.c_str());
+    load_bpfkv_database(db_filename);
 
     serve(&config);
     // rte_eal_mp_wait_lcore();

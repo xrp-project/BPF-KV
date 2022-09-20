@@ -3,6 +3,9 @@ PKGCONF = pkg-config
 DPDK_CFLAGS = $(shell $(PKGCONF) --cflags libdpdk)
 DPDK_LDFLAGS = $(shell $(PKGCONF) --libs libdpdk)
 
+BPFKV_CFLAGS = -I../ -D_GNU_SOURCE
+BPFKV_LDFLAGS = -l../get.o
+
 GPP = g++ -Wall -g -O3 -fno-omit-frame-pointer
 
 all: .bin/userspace_server.out .bin/dpdk_server.out
@@ -12,10 +15,10 @@ all: .bin/userspace_server.out .bin/dpdk_server.out
 
 # DPDK Server
 .bin/dpdk_server.out: .bin dpdk_server.o server_helpers.o
-	$(GPP) $(DPDK_CFLAGS) -o .bin/dpdk_server.out dpdk_server.o server_helpers.o $(DPDK_LDFLAGS) -lyaml-cpp
+	$(GPP) $(DPDK_CFLAGS) $(BPFKV_CFLAGS) -o .bin/dpdk_server.out dpdk_server.o server_helpers.o $(DPDK_LDFLAGS) $(BPFKV_LDFLAGS) -lyaml-cpp
 
 dpdk_server.o: dpdk_server.cpp
-	$(GPP) $(DPDK_CFLAGS) -c dpdk_server.cpp -o dpdk_server.o $(DPDK_LDFLAGS) -lyaml-cpp
+	$(GPP) $(DPDK_CFLAGS) $(BPFKV_CFLAGS) -c dpdk_server.cpp -o dpdk_server.o $(DPDK_LDFLAGS) $(DPDK_LDFLAGS) -lyaml-cpp
 
 # Userspace server
 
@@ -31,3 +34,4 @@ server_helpers.o: server_helpers.cpp server_helpers.h
 clean:
 	rm -rf *.bin
 	rm *.o
+

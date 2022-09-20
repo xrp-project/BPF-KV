@@ -5,7 +5,6 @@ LDLIBS = -pthread -lbpf -lm
 
 all: simplekv bpf
 
-
 simplekv: simplekv.c simplekv.h db_types.h helpers.o range.o parse.o create.o get.o
 
 helpers.o: helpers.c helpers.h db_types.h

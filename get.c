@@ -19,10 +19,7 @@ void load_xrp_get() {
 
 void load_bpfkv_database(char* file_name) {
     /* Open the database */
-    int flags = O_RDONLY;
-    if (use_xrp) {
-        flags = flags | O_DIRECT;
-    }
+    int flags = O_RDONLY | O_DIRECT;
     database_get_fd = open(file_name, flags);
     if (database_get_fd < 0) {
         perror("failed to open database");
@@ -39,7 +36,7 @@ int do_get_cmd(int argc, char *argv[], struct ArgState *as) {
     parse_get_opts(argc, argv, &ga);
 
     if (ga.xrp && bpf_get_fd == -1) {
-        load_xrp_get()
+        load_xrp_get();
     }
 
     if (ga.key_set) {
@@ -125,7 +122,7 @@ char *server_grab_value(unsigned long key, int use_xrp, ptr__t index_offset) {
 
     struct Query query = new_query(key);
     if (use_xrp) {
-        long ret = lookup_bpf(database_get_fd, bpf_fd, &query, index_offset);
+        long ret = lookup_bpf(database_get_fd, bpf_get_fd, &query, index_offset);
 
         if (ret < 0) {
             printf("reached leaf? %ld\n", query.state_flags);
