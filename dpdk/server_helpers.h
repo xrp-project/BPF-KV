@@ -17,6 +17,11 @@
 
 #include <yaml-cpp/yaml.h>
 
+extern "C" {
+	  #include "db_types.h"
+	  #include "get.h"
+}
+
 #define PORT 11211
 #define MAXLINE 1024
 

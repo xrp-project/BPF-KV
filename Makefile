@@ -5,7 +5,9 @@ LDLIBS = -pthread -lbpf -lm
 
 all: simplekv bpf
 
-simplekv: simplekv.c simplekv.h db_types.h helpers.o range.o parse.o create.o get.o
+simplekv: main.c simplekv.h db_types.h simplekv.o helpers.o range.o parse.o create.o get.o
+
+simplekv.o: simplekv.c simplekv.h db_types.h helpers.o range.o parse.o create.o get.o
 
 helpers.o: helpers.c helpers.h db_types.h
 
@@ -25,3 +27,4 @@ bpf:
 clean:
 	rm -rf simplekv *.o
 	make -C xrp-bpf -f Makefile clean
+

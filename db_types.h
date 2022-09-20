@@ -56,7 +56,7 @@ typedef struct _Node {
     ptr__t ptr[NODE_CAPACITY];
 } Node;
 
-static_assert(sizeof(Node) == BLK_SIZE, "Nodes must be block sized");
+//_Static_assert(sizeof(Node) == BLK_SIZE, "Nodes must be block sized");
 
 typedef struct _Log {
     val__t val[LOG_CAPACITY];
@@ -203,9 +203,9 @@ static inline void set_range(struct RangeQuery *query, key__t begin, key__t end,
     query->_resume_from_leaf = ROOT_NODE_OFFSET;
 }
 
-static_assert (sizeof(struct Query) <= SCRATCH_SIZE, "struct Query too large for scratch page");
-static_assert (sizeof(struct ScatterGatherQuery) <= SCRATCH_SIZE, "struct ScatterGatherQuery too large for scratch page");
-static_assert (sizeof(struct RangeQuery) <= SCRATCH_SIZE, "struct RangeQuery too large for scratch page");
+//_Static_assert (sizeof(struct Query) <= SCRATCH_SIZE, "struct Query too large for scratch page");
+//_Static_assert (sizeof(struct ScatterGatherQuery) <= SCRATCH_SIZE, "struct ScatterGatherQuery too large for scratch page");
+//_Static_assert (sizeof(struct RangeQuery) <= SCRATCH_SIZE, "struct RangeQuery too large for scratch page");
 
 static inline struct Query new_query(long key) {
     struct Query query = {
