@@ -30,8 +30,6 @@ enum request_type { REQUEST_TYPE_GET, REQUEST_TYPE_SET };
 struct request {
     enum request_type type;
     std::string key;
-    std::string value;
-    std::string id;
 };
 
 bool starts_with(std::string str, std::string substr);

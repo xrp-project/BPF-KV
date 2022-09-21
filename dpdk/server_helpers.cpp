@@ -40,7 +40,6 @@ struct request *parse_request(std::string msg) {
         // GET <key> <req_id>
         req->type = REQUEST_TYPE_GET;
         req->key = parts[1];
-        req->id = parts[2];
     } else {
         error(EXIT_FAILURE, EXIT_FAILURE, "Unknown request: %s", msg.c_str());
     }
