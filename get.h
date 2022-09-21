@@ -9,6 +9,8 @@ void load_xrp_get();
 
 void load_bpfkv_database(char* file_name);
 
+void close_fds();
+
 int do_get_cmd(int argc, char *argv[], struct ArgState *as);
 
 int lookup_single_key(char *filename, long key, int use_xrp, int bpf_fd);
