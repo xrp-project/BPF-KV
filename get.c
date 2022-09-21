@@ -28,7 +28,7 @@ void load_bpfkv_database(char* file_name) {
 }
 
 void close_fds() {
-    close(db_fd);
+    close(database_get_fd);
 }
 
 int do_get_cmd(int argc, char *argv[], struct ArgState *as) {
