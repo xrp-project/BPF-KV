@@ -137,7 +137,7 @@ char *server_grab_value(unsigned long key, int use_xrp, ptr__t index_offset) {
         if (query.found == 0) {
             printf("reached leaf? %ld\n", query.state_flags);
             printf("result not found\n");
-            exit(1);
+            return NULL;
         }
     } else {
         if (lookup_key_userspace(database_get_fd, &query, index_offset)) {
