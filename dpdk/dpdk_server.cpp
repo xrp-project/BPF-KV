@@ -279,10 +279,10 @@ int main(int argc, char **argv) {
     // Parse config
     YAML::Node file = YAML::LoadFile(argv[1]);
     BpfKvUDPConfig config = BpfKvUDPConfig::parse_yaml(file);
+    char* db_filename = const_cast<char*>(config.bpfkv_udp.database_file.c_str());
 
     // Load XRP program and database
     load_xrp_get();
-    char* db_filename = const_cast<char*>(config.bpfkv_udp.database_file.c_str());
     load_bpfkv_database(db_filename);
 
     serve(&config);

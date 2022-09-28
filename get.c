@@ -107,7 +107,11 @@ char *grab_value(char *file_name, unsigned long const key, int use_xrp, int bpf_
         /* Traverse b+ tree index in db to find value and verify the key exists in leaf node */
     }
     memcpy(retval, query.value, sizeof(query.value));
+
+    // Close and reset database file descriptor
     close(db_fd);
+    database_get_fd = -1;
+
     return retval;
 }
 
@@ -135,8 +139,7 @@ char *server_grab_value(unsigned long key, int use_xrp, ptr__t index_offset) {
             exit(errno);
         }
         if (query.found == 0) {
-            printf("reached leaf? %ld\n", query.state_flags);
-            printf("result not found\n");
+            // Result not found?
             return NULL;
         }
     } else {
