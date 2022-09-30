@@ -56,6 +56,8 @@ std::string compute_response(struct request *req) {
             resp = std::string("VALUE ") + std::string(value) + std::string(" ") + req->id;
         else
             resp = std::string("VALUE  ") + req->id;
+    } else {
+        resp = std::string("INVALID ") + req->id;
     }
 
     return resp;
