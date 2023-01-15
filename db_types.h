@@ -134,7 +134,7 @@ struct RangeQuery {
     key__t range_begin;
     key__t range_end;
     unsigned int flags;
-    unsigned int agg_op;
+    int agg_op;
 
     /* Number of populated values */
     int len;
