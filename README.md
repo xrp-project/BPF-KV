@@ -57,25 +57,13 @@ Usage and option docs can be reviewed by passing the `--help` flag to either com
 ```
 
 ### Using XRP
-Before running with XRP you must load the corresponding BPF function using the
-`xrp_loader` program built via the default make target. Note that GET and RANGE operations
-use separate BPF programs, so be sure to load the correct one.
 
-For GET operations:
-```
-LD_PRELOAD="/usr/lib64/libbpf.so.0" ./xrp_loader xrp-bpf/get_op.o
-```
+BPF-KV will auto-load the necessary BPF program for GET or RANGE benchmarks.
+It needs to run as root in order to do that.
 
-For RANGE operations:
+Run a GET benchmark with:
 ```
-LD_PRELOAD="/usr/lib64/libbpf.so.0" ./xrp_loader xrp-bpf/range_op.o
-```
-
-NOTE: You may need to change `LD_PRELOAD` depending on where `libbpf.so.0` is located on your machine.
-
-With the BPF program loaded, you can run a basic GET benchmark as follows:
-```
-./simplekv 6-layer-db 6 get --requests=100000 --use-xrp
+sudo ./simplekv 6-layer-db 6 get --requests=100000 --use-xrp
 ```
 
 ### CPU Configuration

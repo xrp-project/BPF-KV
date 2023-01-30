@@ -16,7 +16,9 @@
 
 #include "db_types.h"
 
-#define SYS_READ_XRP 445
+#define SYS_READ_XRP              445
+#define XRP_READ_IGNORE_BPF_FD   -1234
+
 
 #define NS_PER_SEC 1000000000
 #define US_PER_NS  1000

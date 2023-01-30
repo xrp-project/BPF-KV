@@ -18,9 +18,10 @@ int do_get_cmd(int argc, char *argv[], struct ArgState *as) {
     };
     parse_get_opts(argc, argv, &ga);
 
-    /* Load BPF program */
-    int bpf_fd = -1;
-    if (ga.xrp) {
+    // Load BPF program, if a BPF fd is not given in args and we are in XRP
+    // mode.
+    int bpf_fd = ga.bpf_fd;
+    if (ga.xrp && !bpf_fd) {
         bpf_fd = load_bpf_program("xrp-bpf/get.o");
     }
 

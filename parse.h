@@ -21,6 +21,7 @@ struct GetArgs {
     int key_set;
     int xrp;
 
+    int bpf_fd;
     int threads;
     int requests;
     size_t cache_level;
