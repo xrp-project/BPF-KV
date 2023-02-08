@@ -3,10 +3,12 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <pthread.h>
 #include <sys/time.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <stdatomic.h>
 
 #include "db_types.h"
 
@@ -27,17 +29,19 @@ extern size_t cache_cap;
 
 typedef struct {
     size_t op_count;
+    size_t op_completed;
     size_t index;
     int db_handler;
     size_t timer;
     int use_xrp;
     int bpf_fd;
     size_t *latency_arr;
+    atomic_bool should_quit;
 } WorkerArg;
 
 int get_handler(char *db_path, int flag);
 
-int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp, int bpf_fd, size_t cache_level);
+int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int runtime, int use_xrp, int bpf_fd, size_t cache_level);
 
 void *subtask(void *args);
 
@@ -53,7 +57,7 @@ void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path, i
 
 void start_workers(pthread_t *tids, WorkerArg *args);
 
-void terminate_workers(pthread_t *tids, WorkerArg *args);
+void terminate_workers(pthread_t *tids, WorkerArg *args, int runtime);
 
 int terminate(void);
 

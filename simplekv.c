@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <time.h>
 #include <argp.h>
+#include <assert.h>
 
 #include "simplekv.h"
 #include "helpers.h"
@@ -123,11 +124,13 @@ void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path, i
     for (size_t i = 0; i < worker_num; i++) {
         args[i].index = i;
         args[i].op_count = (total_op_count / worker_num) + (i < total_op_count % worker_num);
+        args[i].op_completed = 0;
         args[i].db_handler = get_handler(db_path, O_RDONLY);
         args[i].timer = 0;
         args[i].use_xrp = use_xrp;
         args[i].bpf_fd = bpf_fd;
         args[i].latency_arr = args[0].latency_arr + offset;
+        args[i].should_quit = false;
         offset += args[i].op_count;
     }
 }
@@ -138,7 +141,13 @@ void start_workers(pthread_t *tids, WorkerArg *args) {
     }
 }
 
-void terminate_workers(pthread_t *tids, WorkerArg *args) {
+void terminate_workers(pthread_t *tids, WorkerArg *args, int runtime) {
+    if (runtime > 0) {
+        sleep(runtime);
+        for (size_t i = 0; i < worker_num; i++) {
+            atomic_store(&args[i].should_quit, true);
+        }
+    }
     for (size_t i = 0; i < worker_num; i++) {
         pthread_join(tids[i], NULL);
         close(args[i].db_handler);
@@ -169,8 +178,7 @@ static double get_percentile(size_t *latency_arr, size_t request_num, double per
     return value;
 }
 
-static void print_tail_latency(WorkerArg* args, size_t request_num) {
-    size_t *latency_arr = args[0].latency_arr;
+static void print_tail_latency(size_t *latency_arr, size_t request_num) {
     qsort(latency_arr, request_num, sizeof(size_t), cmp);
 
     printf("95%%   latency: %f us\n", get_percentile(latency_arr, request_num, 0.95) / 1000);
@@ -178,8 +186,8 @@ static void print_tail_latency(WorkerArg* args, size_t request_num) {
     printf("99.9%% latency: %f us\n", get_percentile(latency_arr, request_num, 0.999) / 1000);
 }
 
-int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, int use_xrp,
-            int bpf_fd, size_t cache_level) {
+int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num,
+        int runtime, int use_xrp, int bpf_fd, size_t cache_level) {
 
     printf("Running benchmark with %ld layers, %ld requests, and %ld thread(s)\n",
                 layer_num, request_num, thread_num);
@@ -194,30 +202,48 @@ int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num, 
 
     initialize_workers(args, request_num, db_path, use_xrp, bpf_fd);
 
-    clock_gettime(CLOCK_REALTIME, &start);
+    clock_gettime(CLOCK_MONOTONIC, &start);
     srandom(start.tv_nsec ^ start.tv_sec);
     start_workers(tids, args);
-    terminate_workers(tids, args);
-    clock_gettime(CLOCK_REALTIME, &end);
+    terminate_workers(tids, args, runtime);
+    clock_gettime(CLOCK_MONOTONIC, &end);
 
     long total_latency = 0;
     for (size_t i = 0; i < worker_num; i++) total_latency += args[i].timer;
     long run_time = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
 
-    printf("Average throughput: %f op/s latency: %f usec\n", 
-            (double)request_num / run_time * 1000000000, (double)total_latency / request_num / 1000);
-    print_tail_latency(args, request_num);
+    int completed_request_num = 0;
+    size_t *latency_arr;
+    for (size_t i = 0; i < worker_num; i++) completed_request_num += args[i].op_completed;
+    if (completed_request_num == request_num) {
+        latency_arr = args[0].latency_arr;
+    } else {
+        latency_arr = (size_t *) malloc(completed_request_num * sizeof(size_t));
+        int idx = 0;
+        for (size_t i = 0; i < worker_num; i++) {
+            for (size_t j = 0; j < args[i].op_completed; j++) {
+                latency_arr[idx] = args[i].latency_arr[j];
+                assert(latency_arr[idx] > 0);
+                idx++;
+            }
+        }
+        free(args[0].latency_arr);
+    }
+
+    printf("Average throughput: %f op/s latency: %f usec\n",
+            (double)completed_request_num / run_time * 1000000000, (double)total_latency / completed_request_num / 1000);
+    print_tail_latency(latency_arr, completed_request_num);
 
     size_t num_extreme_latency = 0;
-    for (size_t i = 0; i < request_num; ++i) {
-        if (args[0].latency_arr[i] >= 1000000) {
+    for (size_t i = 0; i < completed_request_num; ++i) {
+        if (latency_arr[i] >= 1000000) {
             ++num_extreme_latency;
         }
     }
     printf("Percentage of requests with latency >= 1ms: %.4f%%\n",
-           (100.0 * (double) num_extreme_latency) / ((double) request_num));
+           (100.0 * (double) num_extreme_latency) / ((double) completed_request_num));
 
-    free(args[0].latency_arr);
+    free(latency_arr);
 
     return terminate();
 }
@@ -228,10 +254,14 @@ void *subtask(void *args) {
     srand(r->index);
     printf("thread %ld op_count %ld\n", r->index, r->op_count);
     for (size_t i = 0; i < r->op_count; i++) {
+        if (atomic_load_explicit(&r->should_quit, memory_order_relaxed)) {
+            break;
+        }
+
         key__t key = random() % max_key;
 
         /* Time and execute the XRP lookup */
-        clock_gettime(CLOCK_REALTIME, &tps);
+        clock_gettime(CLOCK_MONOTONIC, &tps);
 
         struct Query query = new_query(key);
 
@@ -252,7 +282,7 @@ void *subtask(void *args) {
             retval = lookup_key_userspace(r->db_handler, &query, index_offset);
         }
 
-        clock_gettime(CLOCK_REALTIME, &tpe);
+        clock_gettime(CLOCK_MONOTONIC, &tpe);
         size_t latency = 1000000000 * (tpe.tv_sec - tps.tv_sec) + (tpe.tv_nsec - tps.tv_nsec);
         r->timer += latency;
         r->latency_arr[i] = latency;
@@ -272,6 +302,7 @@ void *subtask(void *args) {
         } else if (key != long_val) {
             printf("Error! key: %lu val: %s thrd: %ld\n", key, buf, r->index);
         }
+        r->op_completed++;
     }
     return NULL;
 }

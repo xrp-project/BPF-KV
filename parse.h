@@ -24,6 +24,7 @@ struct GetArgs {
     int bpf_fd;
     int threads;
     int requests;
+    int runtime;
     size_t cache_level;
     size_t database_layers;
 };
