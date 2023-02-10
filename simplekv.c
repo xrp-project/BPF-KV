@@ -277,7 +277,7 @@ void *subtask(void *args) {
 
         long retval;
         if (r->use_xrp) {
-            retval = lookup_bpf(r->db_handler, r->bpf_fd, &query, ROOT_NODE_OFFSET);
+            retval = lookup_bpf(r->db_handler, r->bpf_fd, &query, index_offset);
         } else {
             retval = lookup_key_userspace(r->db_handler, &query, index_offset);
         }
