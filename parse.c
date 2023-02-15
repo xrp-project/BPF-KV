@@ -36,6 +36,7 @@ static struct argp_option get_opts[] = {
         { "threads" , 't', "N_THREADS", 0, "Number of concurrent threads to run. Ignored if -k is set." },
         { "runtime" , 'u', "RUNTIME", 0, "Runtime in seconds." },
         { "bpf-fd", 'b', "BPF_FD", 0, "File descriptor of the BPF program to use." },
+        { "pin-threads", 'p', 0, 0, "Pin threads per cpu." },
         { 0 }
 };
 static char get_doc[] = "Run the benchmark to retrieve single keys from the database";
@@ -103,6 +104,10 @@ static int _parse_get_opts(int key, char *arg, struct argp_state *state) {
                 argp_failure(state, 1, 0, "invalid bpf fd");
             }
         }
+            break;
+
+        case 'p':
+            st->pin_threads = true;
             break;
 
         case ARGP_KEY_ARG:

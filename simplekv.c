@@ -7,6 +7,8 @@
 #include <time.h>
 #include <argp.h>
 #include <assert.h>
+#include <pthread.h>
+#include <sched.h>
 
 #include "simplekv.h"
 #include "helpers.h"
@@ -135,9 +137,42 @@ void initialize_workers(WorkerArg *args, size_t total_op_count, char *db_path, i
     }
 }
 
-void start_workers(pthread_t *tids, WorkerArg *args) {
+void start_workers(pthread_t *tids, WorkerArg *args, bool pin_threads) {
     for (size_t i = 0; i < worker_num; i++) {
         pthread_create(&tids[i], NULL, subtask, (void*)&args[i]);
+    }
+    if (pin_threads) {
+        // Get the process affinity mask
+        cpu_set_t cpuset;
+        size_t cpus_set = 0;
+        pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+        for (size_t i = 0; i < CPU_SETSIZE; i++) {
+            if (CPU_ISSET(i, &cpuset)) {
+                cpus_set++;
+            }
+        }
+
+        // Pin an equal number of threads to each CPU
+        size_t thread_idx = 0;
+        size_t per_cpu_threads = worker_num / cpus_set;
+        size_t leftover_threads = worker_num % cpus_set;
+        for (size_t i = 0; i < CPU_SETSIZE; i++) {
+            if (CPU_ISSET(i, &cpuset)) {
+                for (size_t j = 0; j < per_cpu_threads; j++) {
+                    CPU_ZERO(&cpuset);
+                    CPU_SET(i, &cpuset);
+                    pthread_setaffinity_np(tids[thread_idx], sizeof(cpu_set_t), &cpuset);
+                    thread_idx++;
+                }
+                if (leftover_threads > 0) {
+                    CPU_ZERO(&cpuset);
+                    CPU_SET(i, &cpuset);
+                    pthread_setaffinity_np(tids[thread_idx], sizeof(cpu_set_t), &cpuset);
+                    thread_idx++;
+                    leftover_threads--;
+                }
+            }
+        }
     }
 }
 
@@ -187,7 +222,8 @@ static void print_tail_latency(size_t *latency_arr, size_t request_num) {
 }
 
 int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num,
-        int runtime, int use_xrp, int bpf_fd, size_t cache_level) {
+        int runtime, int use_xrp, int bpf_fd, size_t cache_level,
+        bool pin_threads) {
 
     printf("Running benchmark with %ld layers, %ld requests, and %ld thread(s)\n",
                 layer_num, request_num, thread_num);
@@ -204,7 +240,7 @@ int run(char *db_path, size_t layer_num, size_t request_num, size_t thread_num,
 
     clock_gettime(CLOCK_MONOTONIC, &start);
     srandom(start.tv_nsec ^ start.tv_sec);
-    start_workers(tids, args);
+    start_workers(tids, args, pin_threads);
     terminate_workers(tids, args, runtime);
     clock_gettime(CLOCK_MONOTONIC, &end);
 

@@ -2,6 +2,7 @@
 #define _PARSE_H_
 
 #include <argp.h>
+#include <stdbool.h>
 
 #define CACHE_ARG_KEY 1337
 #define RANGE_SUM_KEY 9999
@@ -27,6 +28,7 @@ struct GetArgs {
     int runtime;
     size_t cache_level;
     size_t database_layers;
+    bool pin_threads;
 };
 
 struct RangeArgs {

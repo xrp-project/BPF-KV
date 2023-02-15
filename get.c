@@ -29,7 +29,7 @@ int do_get_cmd(int argc, char *argv[], struct ArgState *as) {
         return lookup_single_key(as->filename, ga.key, ga.xrp, bpf_fd);
     }
 
-    return run(as->filename, as->layers, ga.requests, ga.threads, ga.runtime, ga.xrp, bpf_fd, ga.cache_level);
+    return run(as->filename, as->layers, ga.requests, ga.threads, ga.runtime, ga.xrp, bpf_fd, ga.cache_level, ga.pin_threads);
 }
 
 
