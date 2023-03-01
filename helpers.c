@@ -2,6 +2,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <sched.h>
 
 #include "helpers.h"
 
@@ -141,4 +143,70 @@ int load_bpf_program(char *path) {
     }
 
     return progfd;
+}
+
+void pin_threads_equally(pthread_t *tids, int num_threads) {
+    // Get the process affinity mask
+    cpu_set_t cpuset;
+    size_t cpus_set = 0;
+    pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    for (size_t i = 0; i < CPU_SETSIZE; i++) {
+        if (CPU_ISSET(i, &cpuset)) {
+            cpus_set++;
+        }
+    }
+
+    // Pin an equal number of threads to each CPU
+    size_t thread_idx = 0;
+    size_t per_cpu_threads = num_threads / cpus_set;
+    size_t leftover_threads = num_threads % cpus_set;
+    for (size_t i = 0; i < CPU_SETSIZE; i++) {
+        if (CPU_ISSET(i, &cpuset)) {
+            for (size_t j = 0; j < per_cpu_threads; j++) {
+                CPU_ZERO(&cpuset);
+                CPU_SET(i, &cpuset);
+                pthread_setaffinity_np(tids[thread_idx], sizeof(cpu_set_t), &cpuset);
+                thread_idx++;
+            }
+            if (leftover_threads > 0) {
+                CPU_ZERO(&cpuset);
+                CPU_SET(i, &cpuset);
+                pthread_setaffinity_np(tids[thread_idx], sizeof(cpu_set_t), &cpuset);
+                thread_idx++;
+                leftover_threads--;
+            }
+        }
+    }
+}
+
+int cmp(const void *a, const void *b) {
+    size_t val_a = *((const size_t *) a);
+    size_t val_b = *((const size_t *) b);
+    if (val_a == val_b) {
+        return 0;
+    } else if (val_a < val_b) {
+        return -1;
+    } else {
+        return 1;
+    }
+}
+
+static double get_percentile(size_t *latency_arr, size_t request_num, double percentile)
+{
+    double exact_index = ((double) (request_num - 1)) * percentile;
+    double left_index = floor(exact_index);
+    double right_index = ceil(exact_index);
+
+    double left_value = (double) latency_arr[(size_t) left_index];
+    double right_value = (double) latency_arr[(size_t) right_index];
+    double value = left_value + (exact_index - left_index) * (right_value - left_value);
+    return value;
+}
+
+void print_tail_latency(size_t *latency_arr, size_t request_num) {
+    qsort(latency_arr, request_num, sizeof(size_t), cmp);
+
+    printf("95%%   latency: %f us\n", get_percentile(latency_arr, request_num, 0.95) / 1000);
+    printf("99%%   latency: %f us\n", get_percentile(latency_arr, request_num, 0.99) / 1000);
+    printf("99.9%% latency: %f us\n", get_percentile(latency_arr, request_num, 0.999) / 1000);
 }

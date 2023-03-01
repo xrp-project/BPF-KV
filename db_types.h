@@ -201,6 +201,7 @@ static inline void set_range(struct RangeQuery *query, key__t begin, key__t end,
     query->len = 0;
     query->_state = RNG_TRAVERSE;
     query->_resume_from_leaf = ROOT_NODE_OFFSET;
+    query->_node_key_ix = 0;
 }
 
 _Static_assert (sizeof(struct Query) <= SCRATCH_SIZE, "struct Query too large for scratch page");

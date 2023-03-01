@@ -145,8 +145,12 @@ static struct argp_option range_opts[] = {
         { "dump", 'd', 0, 0, "Dump values to stdout." },
         { "sum", RANGE_SUM_KEY, 0, 0, "Sum the first 8 bytes of each value instead of returning them."},
         { "use-xrp", 'x', 0, 0, "Use the (previously) loaded XRP BPF function to query the DB." },
-        { "requests", 'r', "REQ", 0, "Number of requests to submit per thread. Ignored if -k is set." },
+        { "requests", 'r', "REQ", 0, "Number of requests to submit per thread." },
+        { "threads" , 't', "N_THREADS", 0, "Number of concurrent threads to run" },
         { "range-size", 's', "SIZE", 0, "Size of randomly generated ranges for benchmarking." },
+        { "runtime" , 'u', "RUNTIME", 0, "Runtime in seconds." },
+        { "bpf-fd", 'b', "BPF_FD", 0, "File descriptor of the BPF program to use." },
+        { "pin-threads", 'p', 0, 0, "Pin threads per cpu." },
         { 0 }
 };
 static char range_doc[] = "Perform a range query against the specified database\v"
@@ -188,6 +192,15 @@ static int _parse_range_opts(int key, char *arg, struct argp_state *state) {
         }
             break;
 
+        case 't': {
+            char *endptr = NULL;
+            st->threads = strtol(arg, &endptr, 10);
+            if ((endptr != NULL && *endptr != '\0') || st->threads < 0) {
+                argp_failure(state, 1, 0, "invalid number of threads");
+            }
+        }
+            break;
+
         case 'x':
             st->xrp = 1;
             break;
@@ -196,9 +209,29 @@ static int _parse_range_opts(int key, char *arg, struct argp_state *state) {
             char *endptr = NULL;
             st->range_size = strtol(arg, &endptr, 10);
             if ((endptr != NULL && *endptr != '\0') || st->range_size < 0) {
-                argp_error(state, "invalid number of requests");
+                argp_error(state, "invalid range size");
             }
         }
+            break;
+        case 'u': {
+            char *endptr = NULL;
+            st->runtime = strtol(arg, &endptr, 10);
+            if ((endptr != NULL && *endptr != '\0') || st->runtime <= 0) {
+                argp_failure(state, 1, 0, "invalid runtime");
+            }
+        }
+            break;
+        case 'b': {
+            char *endptr = NULL;
+            st->bpf_fd = strtol(arg, &endptr, 10);
+            if (endptr != NULL && *endptr != '\0') {
+                argp_failure(state, 1, 0, "invalid bpf fd");
+            }
+        }
+            break;
+
+        case 'p':
+            st->pin_threads = true;
             break;
 
         case ARGP_KEY_END:

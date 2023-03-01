@@ -3,6 +3,7 @@
 #include <argp.h>
 #include <fcntl.h>
 #include <time.h>
+#include <assert.h>
 
 #include "range.h"
 #include "parse.h"
@@ -28,8 +29,133 @@ static void print_query_results(struct RangeQuery *query) {
     }
 }
 
+typedef struct {
+    unsigned int agg_op;
+    key__t range_begin;
+    key__t range_end;
+    long range_size;
+    key__t max_key;
+    int dump_flag;
+
+    size_t *latency_arr;
+    size_t op_count;
+    size_t op_completed;
+    size_t index;
+    int db_handler;
+    size_t timer;
+    int use_xrp;
+    int bpf_fd;
+    atomic_bool should_quit;
+} RangeWorkerArg;
+
+void *range_subtask(void *args) {
+    RangeWorkerArg *r = (RangeWorkerArg *) args;
+    /**
+     * Range Query
+     *
+     * Runs the range query requested at the command line and dumps the values
+     * (as ASCII with whitespace trimmed) to stdout separated by a newline.
+     */
+    struct RangeQuery query = { .agg_op = r->agg_op };
+
+    /* Retrieve values in range and print */
+    struct timespec l_start, l_stop;
+
+    /* Used to generate random ranges */
+    srandom(r->index);
+    max_key = r->max_key;
+
+    printf("Running range query with %ld requests of size %ld\n", r->op_count,
+           r->range_size);
+    for (long i = 0; i < r->op_count; ++i) {
+        if (atomic_load_explicit(&r->should_quit, memory_order_relaxed)) {
+                    break;
+        }
+        if (r->range_size) {
+            r->range_begin = random() % (max_key + 2 - r->range_size);
+            r->range_end = r->range_begin + r->range_size;
+        }
+        set_range(&query, r->range_begin, r->range_end, 0);
+
+        clock_gettime(CLOCK_MONOTONIC, &l_start);
+        for (;;) {
+            int rv = submit_range_query(&query, r->db_handler, r->use_xrp, r->bpf_fd);
+
+            if (rv != 0) {
+                exit(rv);
+            }
+            if (r->dump_flag) {
+                print_query_results(&query);
+            }
+            if (prep_range_resume(&query)) {
+                break;
+            }
+        }
+        r->op_completed++;
+        clock_gettime(CLOCK_MONOTONIC, &l_stop);
+        size_t latency = NS_PER_SEC * (l_stop.tv_sec - l_start.tv_sec) + (l_stop.tv_nsec - l_start.tv_nsec);
+        r->timer += latency;
+        r->latency_arr[i] = latency;
+    }
+    return NULL;
+}
+
+void initialize_range_workers(RangeWorkerArg *args, size_t total_op_count,
+                              int db_handler, int use_xrp, int bpf_fd,
+                              int num_threads, unsigned int agg_op,
+                              key__t range_begin, key__t range_end,
+                              long range_size, int dump_flag, key__t max_key) {
+    size_t offset = 0;
+    args[0].latency_arr = (size_t *) malloc(total_op_count * sizeof(size_t));
+    BUG_ON(args[0].latency_arr == NULL);
+    for (size_t i = 0; i < num_threads; i++) {
+        args[i].index = i;
+        args[i].op_count = (total_op_count / num_threads) + (i < total_op_count % num_threads);
+        args[i].op_completed = 0;
+        args[i].db_handler = db_handler;
+        args[i].timer = 0;
+        args[i].use_xrp = use_xrp;
+        args[i].bpf_fd = bpf_fd;
+        args[i].latency_arr = args[0].latency_arr + offset;
+        args[i].should_quit = false;
+        args[i].range_size = range_size;
+        args[i].agg_op = agg_op;
+        args[i].dump_flag = dump_flag;
+        args[i].max_key = max_key;
+        args[i].range_begin = range_begin;
+        args[i].range_end = range_end;
+        offset += args[i].op_count;
+    }
+}
+
+void start_range_workers(pthread_t *tids, RangeWorkerArg *args,
+                         bool pin_threads, int num_threads) {
+    for (size_t i = 0; i < num_threads; i++) {
+        pthread_create(&tids[i], NULL, range_subtask, (void*)&args[i]);
+    }
+    if (pin_threads) {
+        pin_threads_equally(tids, num_threads);
+    }
+}
+
+void terminate_range_workers(pthread_t *tids, RangeWorkerArg *args, int runtime,
+                             int num_threads) {
+    if (runtime > 0) {
+        sleep(runtime);
+        for (size_t i = 0; i < num_threads; i++) {
+            atomic_store(&args[i].should_quit, true);
+        }
+    }
+    for (size_t i = 0; i < num_threads; i++) {
+        pthread_join(tids[i], NULL);
+    }
+}
+
 int do_range_cmd(int argc, char *argv[], struct ArgState *as) {
-    struct RangeArgs ra = { .requests = 1 };
+    struct RangeArgs ra = {
+        .requests = 1,
+        .threads = 1,
+    };
     parse_range_opts(argc, argv, &ra);
     if (ra.range_size && ra.range_size - 1 > calculate_max_key(as->layers)) {
         fprintf(stderr, "range size exceeds database size\n");
@@ -37,66 +163,62 @@ int do_range_cmd(int argc, char *argv[], struct ArgState *as) {
     }
 
     /* Load BPF program */
-    int bpf_fd = -1;
-    if (ra.xrp) {
+    int bpf_fd = ra.bpf_fd;
+    if (ra.xrp && !ra.bpf_fd) {
         bpf_fd = load_bpf_program("xrp-bpf/range.o");
     }
 
-    /**
-     * Range Query
-     *
-     * Runs the range query requested at the command line and dumps the values
-     * (as ASCII with whitespace trimmed) to stdout separated by a newline.
-     */
-    struct RangeQuery query = { .agg_op = ra.agg_op };
-
     /* Open the database */
-    int db_fd = get_handler(as->filename, O_RDONLY);
+    int db_handler = get_handler(as->filename, O_RDONLY);
 
     /* Retrieve values in range and print */
-    struct timespec start, stop, l_start, l_stop;
+    struct timespec start, stop;
     long total_time = 0, total_latency = 0;
-    clock_gettime(CLOCK_REALTIME, &start);
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
-    /* Used to generate random ranges */
-    srandom(start.tv_nsec ^ start.tv_sec);
-    max_key = calculate_max_key(as->layers);
+    pthread_t tids[ra.threads];
+    RangeWorkerArg args[ra.threads];
+    initialize_range_workers(args, ra.requests, db_handler, ra.xrp, bpf_fd,
+                             ra.threads, ra.agg_op, ra.range_begin, ra.range_end,
+                             ra.range_size, ra.dump_flag,
+                             calculate_max_key(as->layers));
+    start_range_workers(tids, args, ra.pin_threads, ra.threads);
+    terminate_range_workers(tids, args, ra.runtime, ra.threads);
 
-    for (long i = 0; i < ra.requests; ++i) {
-        if (ra.range_size) {
-            ra.range_begin = random() % (max_key + 2 - ra.range_size);
-            ra.range_end = ra.range_begin + ra.range_size;
-        }
-        set_range(&query, ra.range_begin, ra.range_end, 0);
-
-        for (;;) {
-            clock_gettime(CLOCK_REALTIME, &l_start);
-            int rv = submit_range_query(&query, db_fd, ra.xrp, bpf_fd);
-            clock_gettime(CLOCK_REALTIME, &l_stop);
-
-            total_latency += NS_PER_SEC * (l_stop.tv_sec - l_start.tv_sec) + (l_stop.tv_nsec - l_start.tv_nsec);
-
-            if (rv != 0) {
-                exit(rv);
-            }
-            if (ra.dump_flag) {
-                print_query_results(&query);
-            }
-            if (prep_range_resume(&query)) {
-                break;
-            }
-        }
-    }
-    clock_gettime(CLOCK_REALTIME, &stop);
-    total_time = NS_PER_SEC * (stop.tv_sec - start.tv_sec) + (stop.tv_nsec - start.tv_nsec);
+    clock_gettime(CLOCK_MONOTONIC, &stop);
 
     /* Dump results */
-    double throughput = ((double) ra.requests / (double) total_time) * NS_PER_SEC; // ops/sec
-    double latency = (double) total_latency / (double) ra.requests / US_PER_NS;
-    unsigned long range_size = ra.range_size ? ra.range_size : ra.range_end - ra.range_begin;
-    printf("Range Size: %lu, Average throughput: %f op/s latency: %f usec\n", range_size, throughput, latency);
+    for (size_t i = 0; i < ra.threads; i++) total_latency += args[i].timer;
+    total_time = NS_PER_SEC * (stop.tv_sec - start.tv_sec) + (stop.tv_nsec - start.tv_nsec);
 
-    close(db_fd);
+    int completed_request_num = 0;
+    size_t *latency_arr;
+    for (size_t i = 0; i < ra.threads; i++) completed_request_num += args[i].op_completed;
+    if (completed_request_num == ra.requests) {
+        latency_arr = args[0].latency_arr;
+    } else {
+        latency_arr = (size_t *) malloc(completed_request_num * sizeof(size_t));
+        int idx = 0;
+        for (size_t i = 0; i < ra.threads; i++) {
+            for (size_t j = 0; j < args[i].op_completed; j++) {
+                latency_arr[idx] = args[i].latency_arr[j];
+                assert(latency_arr[idx] > 0);
+                idx++;
+            }
+        }
+        free(args[0].latency_arr);
+    }
+
+
+    double avg_throughput = ((double) completed_request_num / (double) total_time) * NS_PER_SEC; // ops/sec
+    double avg_latency = (double) total_latency / (double) completed_request_num / US_PER_NS;
+    unsigned long range_size = ra.range_size ? ra.range_size : ra.range_end - ra.range_begin;
+    printf("Range Size: %lu\n", range_size);
+    printf("Average throughput: %f op/s latency: %f usec\n", avg_throughput,
+           avg_latency);
+    print_tail_latency(latency_arr, completed_request_num);
+
+    close(db_handler);
     return 0;
 }
 

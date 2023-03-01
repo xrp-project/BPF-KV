@@ -64,6 +64,10 @@ long calculate_max_key(unsigned int layers);
 
 int load_bpf_program(char *path);
 
+void pin_threads_equally(pthread_t *tids, int num_threads);
+
+void print_tail_latency(size_t *latency_arr, size_t request_num);
+
 #define BUG_ON(condition)   \
     do {                    \
         if (condition)      \

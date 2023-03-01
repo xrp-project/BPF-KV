@@ -34,10 +34,14 @@ struct GetArgs {
 struct RangeArgs {
     int dump_flag;
     int xrp;
+    int bpf_fd;
     unsigned long range_begin;
     unsigned long range_end;
     long requests;
     long range_size;
+    int threads;
+    int runtime;
+    bool pin_threads;
 
     int agg_op;
 };
